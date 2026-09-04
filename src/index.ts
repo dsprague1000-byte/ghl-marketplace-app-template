@@ -117,6 +117,30 @@ app.post("/decrypt-sso",async (req: Request, res: Response) => {
   }
 })
 
+/* P016: OAuth callback receiver.
+   Confirms that HighLevel reached the backend without exposing the authorization code. */
+app.get("/oauth/callback", (req: Request, res: Response) => {
+  const codeReceived =
+    typeof req.query.code === "string" && req.query.code.length > 0;
+
+  res.status(200).send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MPP OAuth Callback Received</title>
+</head>
+<body>
+  <main>
+    <h1>MPP OAuth Callback Received</h1>
+    <p>Authorization response reached the MPP backend successfully.</p>
+    <p>Authorization code received: ${codeReceived ? "Yes" : "No"}</p>
+    <p>You may close this page.</p>
+  </main>
+</body>
+</html>`);
+});
+
 /*`app.get("/", function (req, res) {
   res.sendFile(path + "index.html");
 });` sets up a route for the root URL ("/") of the server.  This is
