@@ -180,12 +180,14 @@ export class GHL {
     try {
       const resp = await axios.post(
         `${process.env.GHL_API_DOMAIN}/oauth/token`,
-        qs.stringify({
-          client_id: process.env.GHL_APP_CLIENT_ID,
-          client_secret: process.env.GHL_APP_CLIENT_SECRET,
-          grant_type: "authorization_code",
-          code,
-        }),
+       qs.stringify({
+  client_id: process.env.GHL_APP_CLIENT_ID,
+  client_secret: process.env.GHL_APP_CLIENT_SECRET,
+  grant_type: "authorization_code",
+  code,
+  user_type: "Location",
+  redirect_uri: "https://mpp-auth-context-probe.onrender.com/oauth/callback",
+}),
         { headers: { "content-type": "application/x-www-form-urlencoded" } }
       );
       this.model.saveInstallationInfo(resp.data);
