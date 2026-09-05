@@ -29,7 +29,6 @@ export class Model {
  * `InstallationDetails`.
  */
   async saveInstallationInfo(details: InstallationDetails) {
-    console.log(details);
     if (details.locationId) {
       this.installationObjects[details.locationId] = details;
     } else if (details.companyId) {
