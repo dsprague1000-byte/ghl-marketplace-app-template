@@ -119,22 +119,70 @@ app.post("/decrypt-sso",async (req: Request, res: Response) => {
 
 /* P016: OAuth callback receiver.
    Confirms that HighLevel reached the backend without exposing the authorization code. */
-app.get("/oauth/callback", (req: Request, res: Response) => {
-  const codeReceived =
-    typeof req.query.code === "string" && req.query.code.length > 0;
+app.get("/oauth/callback", async (req: Request, res: Response) => {
+  const { code } = req.query;
 
-  res.status(200).send(`<!doctype html>
+  // No code — safe informational response only
+  if (!code) {
+    return res.status(200).send(`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MPP OAuth Callback Received</title>
+  <title>MPP OAuth Callback</title>
 </head>
 <body>
   <main>
     <h1>MPP OAuth Callback Received</h1>
     <p>Authorization response reached the MPP backend successfully.</p>
-    <p>Authorization code received: ${codeReceived ? "Yes" : "No"}</p>
+    <p>Authorization code received: No</p>
+    <p>You may close this page.</p>
+  </main>
+</body>
+</html>`);
+  }
+
+  // Exchange the authorization code using the existing HighLevel template machinery.
+  // Never log or echo the code itself.
+  await ghl.authorizationHandler(code as string);
+
+  // authorizationHandler catches token-exchange failures internally,
+  // so verify that the Location installation was actually stored.
+  const locationId = "e44pA2hEK8BXwer0eNYB";
+  const tokenStored = ghl.checkInstallationExists(locationId);
+
+  if (!tokenStored) {
+    return res.status(500).send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MPP OAuth Callback</title>
+</head>
+<body>
+  <main>
+    <h1>MPP OAuth Callback Received</h1>
+    <p>Authorization code received: Yes</p>
+    <p>Token exchange/storage: Failed</p>
+    <p>Do not retry yet. Contact the administrator.</p>
+  </main>
+</body>
+</html>`);
+  }
+
+  return res.status(200).send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MPP OAuth Installation Complete</title>
+</head>
+<body>
+  <main>
+    <h1>MPP OAuth Installation Complete</h1>
+    <p>Authorization code received: Yes</p>
+    <p>Token exchange/storage: Complete</p>
+    <p>Location: ${locationId}</p>
     <p>You may close this page.</p>
   </main>
 </body>
@@ -145,6 +193,19 @@ app.get("/oauth/callback", (req: Request, res: Response) => {
   res.sendFile(path + "index.html");
 });` sets up a route for the root URL ("/") of the server.  This is
  used to serve the main HTML file of a web application. */
+
+app.get("/oauth/token-status", (req: Request, res: Response) => {
+  const locationId = "e44pA2hEK8BXwer0eNYB";
+  const inst = ghl.model.installationObjects[locationId];
+
+  return res.json({
+    tokenAvailable: ghl.checkInstallationExists(locationId),
+    locationId: inst?.locationId ?? null,
+    userType: inst?.userType ?? null,
+    refreshTokenPresent: !!ghl.model.getRefreshToken(locationId),
+  });
+});
+
 app.get("/", function (req, res) {
   res.sendFile(path + "index.html");
 });
