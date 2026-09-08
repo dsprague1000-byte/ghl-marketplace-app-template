@@ -181,16 +181,16 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
       .requests(activeLocation)
       .post(
         `/objects/custom_objects.mpp_user_assignment/records/search`,
-        { locationId: activeLocation, page: 1, pageLimit: 25 },
+        { locationId: activeLocation, query: userId, page: 1, pageLimit: 5 },
         { headers: { Version: "2021-07-28" } }
       );
-        records = searchResp.data?.customObjectRecords ?? [];
+    records = searchResp.data?.customObjectRecords ?? [];
   } catch (err: any) {
-    console.error('[P017-search] err:', err?.response?.status, err?.message, JSON.stringify(err?.response?.data));
-    return res.status(500).json({
-      error: "Assignment search failed",
+    console.error("[P017-search]", {
+      status: err?.response?.status ?? null,
       message: err?.message ?? "unknown",
     });
+    return res.status(500).json({ error: "assignment_search_failed" });
   }
 
   // Step 4: Exact ghl_user_id match only
@@ -220,6 +220,7 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
       scope_type: record.properties?.scope_type ?? null,
       active: record.properties?.active ?? null,
       assignment_name: record.properties?.assignment_name ?? null,
+      ghl_user_id: record.properties?.ghl_user_id ?? null,
     },
   });
 });
