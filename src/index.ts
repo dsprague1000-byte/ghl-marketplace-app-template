@@ -181,11 +181,12 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
       .requests(activeLocation)
       .post(
         `/objects/custom_objects.mpp_user_assignment/records/search`,
-        { locationId: activeLocation, pageSize: 25 },
+        { locationId: activeLocation, page: 1, pageLimit: 25 },
         { headers: { Version: "2021-07-28" } }
       );
-    records = searchResp.data?.records ?? searchResp.data?.data ?? [];
+        records = searchResp.data?.customObjectRecords ?? [];
   } catch (err: any) {
+    console.error('[P017-search] err:', err?.response?.status, err?.message, JSON.stringify(err?.response?.data));
     return res.status(500).json({
       error: "Assignment search failed",
       message: err?.message ?? "unknown",
