@@ -51,6 +51,10 @@
               <dt>Assignment Name</dt>
               <dd>{{ assignment.assignment.assignment_name || '—' }}</dd>
             </div>
+                        <div>
+                                        <dt>Assignment GHL User ID</dt>
+                                        <dd>{{ assignment.assignment.ghl_user_id || '—' }}</dd>
+                                      </div>
           </dl>
           <p v-else-if="assignment && assignment.error" class="error">
             Assignment error: {{ assignment.error }}
