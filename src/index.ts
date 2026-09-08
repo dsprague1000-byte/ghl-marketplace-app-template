@@ -53,11 +53,6 @@ app.get("/example-api-call", async (req: Request, res: Response) => {
 /*`app.get("/example-api-call-location", async (req: Request, res: Response) => { ... })` shows you how you can use ghl object to make get requests
  ghl object in abstract would handle all of the authorization part over here. */
 app.get("/example-api-call-location", async (req: Request, res: Response) => {
-  /* The line `if(ghl.checkInstallationExists(req.params.locationId)){` is checking if an
-    installation already exists for a specific location. It calls the `checkInstallationExists`
-    method of the `GHL` class and passes the `locationId` as a parameter. This method checks if
-    there is an existing installation for the provided locationId and returns a boolean value
-    indicating whether the installation exists or not. */
   try {
     if (ghl.checkInstallationExists(req.params.locationId)) {
       const request = await ghl
@@ -69,10 +64,6 @@ app.get("/example-api-call-location", async (req: Request, res: Response) => {
         });
       return res.send(request.data);
     } else {
-      /* NOTE: This flow would only work if you have a distribution type of both Location & Company & OAuth read-write scopes are configured. 
-        The line `await ghl.getLocationTokenFromCompanyToken(req.query.companyId as string, req.query.locationId as string)`
-         is calling the `getLocationTokenFromCompanyToken` method of the
-        `GHL` class. This method is used to retrieve the location token for a specific location within a company. */
       await ghl.getLocationTokenFromCompanyToken(
         req.query.companyId as string,
         req.query.locationId as string
@@ -92,10 +83,6 @@ app.get("/example-api-call-location", async (req: Request, res: Response) => {
   }
 });
 
-/*`app.post("example-webhook-handler",async (req: Request, res: Response) => {
-    console.log(req.body)
-})` sets up a route for handling HTTP POST requests to the "/example-webhook-handler" endpoint. The below POST
-api can be used to subscribe to various webhook events configured for the app. */
 app.post("/example-webhook-handler",async (req: Request, res: Response) => {
     console.log(req.body)
 })
@@ -150,6 +137,7 @@ app.get("/oauth/callback", async (req: Request, res: Response) => {
   // so verify that the Location installation was actually stored.
   const locationId = "e44pA2hEK8BXwer0eNYB";
   const tokenStored = ghl.checkInstallationExists(locationId);
+  const allKeys = Object.keys(ghl.model.installationObjects);
 
   if (!tokenStored) {
     return res.status(500).send(`<!doctype html>
@@ -164,6 +152,8 @@ app.get("/oauth/callback", async (req: Request, res: Response) => {
     <h1>MPP OAuth Callback Received</h1>
     <p>Authorization code received: Yes</p>
     <p>Token exchange/storage: Failed</p>
+    <p>installationObjectsKeys: ${JSON.stringify(allKeys)}</p>
+    <p>Check Render logs for [P018-diag] exchange result.</p>
     <p>Do not retry yet. Contact the administrator.</p>
   </main>
 </body>
@@ -189,20 +179,20 @@ app.get("/oauth/callback", async (req: Request, res: Response) => {
 </html>`);
 });
 
-/*`app.get("/", function (req, res) {
-  res.sendFile(path + "index.html");
-});` sets up a route for the root URL ("/") of the server.  This is
- used to serve the main HTML file of a web application. */
-
 app.get("/oauth/token-status", (req: Request, res: Response) => {
   const locationId = "e44pA2hEK8BXwer0eNYB";
   const inst = ghl.model.installationObjects[locationId];
+  const allKeys = Object.keys(ghl.model.installationObjects);
 
   return res.json({
     tokenAvailable: ghl.checkInstallationExists(locationId),
     locationId: inst?.locationId ?? null,
+    companyId: inst?.companyId ?? null,
     userType: inst?.userType ?? null,
+    expires_in: inst?.expires_in ?? null,
     refreshTokenPresent: !!ghl.model.getRefreshToken(locationId),
+    installationObjectsKeys: allKeys,
+    storedKey: allKeys.length > 0 ? allKeys[0] : null,
   });
 });
 
@@ -210,9 +200,6 @@ app.get("/", function (req, res) {
   res.sendFile(path + "index.html");
 });
 
-/*`app.listen(port, () => {
-  console.log(`GHL app listening on port `);
-});` is starting the Express server and making it listen on the specified port. */
 app.listen(port, () => {
   console.log(`GHL app listening on port ${port}`);
 });
