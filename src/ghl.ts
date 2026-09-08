@@ -180,19 +180,39 @@ export class GHL {
     try {
       const resp = await axios.post(
         `${process.env.GHL_API_DOMAIN}/oauth/token`,
-       qs.stringify({
-  client_id: process.env.GHL_APP_CLIENT_ID,
-  client_secret: process.env.GHL_APP_CLIENT_SECRET,
-  grant_type: "authorization_code",
-  code,
-  user_type: "Location",
-  redirect_uri: "https://mpp-auth-context-probe.onrender.com/oauth/callback",
-}),
+        qs.stringify({
+          client_id: process.env.GHL_APP_CLIENT_ID,
+          client_secret: process.env.GHL_APP_CLIENT_SECRET,
+          grant_type: "authorization_code",
+          code,
+          user_type: "Location",
+          redirect_uri: "https://mpp-auth-context-probe.onrender.com/oauth/callback",
+        }),
         { headers: { "content-type": "application/x-www-form-urlencoded" } }
       );
       this.model.saveInstallationInfo(resp.data);
+      // P018 diagnostic — safe fields only, no tokens or secrets
+      console.log('[P018-diag] exchange success:', JSON.stringify({
+        http_status: resp.status,
+        token_present: !!resp.data.access_token,
+        expires_in: resp.data.expires_in ?? null,
+        locationId: resp.data.locationId ?? null,
+        companyId: resp.data.companyId ?? null,
+        userType: resp.data.userType ?? null,
+        response_keys: Object.keys(resp.data),
+        stored_key: resp.data.locationId || resp.data.companyId || null,
+      }));
     } catch (error: any) {
-      console.error(error?.response?.data);
+      // P018 diagnostic — HTTP error: log safe fields only; network error: log message only
+      if (error?.response) {
+        console.error('[P018-diag] exchange HTTP error:', JSON.stringify({
+          status: error.response.status,
+          error: error.response.data?.error,
+          error_description: error.response.data?.error_description,
+        }));
+      } else {
+        console.error('[P018-diag] exchange network/config error:', error?.message ?? 'unknown');
+      }
     }
   }
 }
