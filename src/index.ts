@@ -166,23 +166,43 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
     });
   }
 
-  // Step 2: Verify OAuth token is available for this location
+  // Step 2: Ensure a Location token is available for the SSO location.
+  // Agency bulk installs produce a Company token; exchange it through the
+  // template's existing Company -> Location token helper when needed.
   if (!ghl.checkInstallationExists(activeLocation)) {
-    return res.status(403).json({
-          const SPOKE_COMPANY_ID = "NUAR0gljpx3i4RfDQPCf";
-const companyInst = ghl.model.installationObjects[SPOKE_COMPANY_ID];
-if (!companyInst || companyInst.userType !== "Company") {
-return res.status(403).json({ error: "No OAuth token available for this location", activeLocation });
-}
-try {
-await ghl.getLocationTokenFromCompanyToken(SPOKE_COMPANY_ID, activeLocation);
-} catch (err: any) {
-console.error("[P017-token-exchange]", { status: err?.response?.status ?? null, message: err?.message ?? "unknown" });
-return res.status(403).json({ error: "Location token exchange failed", activeLocation });
-}
-if (!ghl.checkInstallationExists(activeLocation)) {
-return res.status(403).json({ error: "Location token exchange produced no token", activeLocation });
-}
+    const SPOKE_COMPANY_ID = "NUAR0gljpx3i4RfDQPCf";
+    const companyInst = ghl.model.installationObjects[SPOKE_COMPANY_ID];
+
+    if (!companyInst || companyInst.userType !== "Company") {
+      return res.status(403).json({
+        error: "No OAuth token available for this location",
+        activeLocation,
+      });
+    }
+
+    try {
+      await ghl.getLocationTokenFromCompanyToken(
+        SPOKE_COMPANY_ID,
+        activeLocation
+      );
+    } catch (err: any) {
+      console.error("[P017-token-exchange]", {
+        status: err?.response?.status ?? null,
+        message: err?.message ?? "unknown",
+      });
+      return res.status(403).json({
+        error: "Location token exchange failed",
+        activeLocation,
+      });
+    }
+
+    if (!ghl.checkInstallationExists(activeLocation)) {
+      return res.status(403).json({
+        error: "Location token exchange produced no token",
+        activeLocation,
+      });
+    }
+  }
 
   // Step 3: Search MPP User Assignment records
   let records: any[] = [];
