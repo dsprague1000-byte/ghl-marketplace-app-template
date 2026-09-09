@@ -1,1 +1,0 @@
-TOWER GitHub write authorization test. Safe to delete.
