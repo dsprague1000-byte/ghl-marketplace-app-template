@@ -143,7 +143,8 @@ export class GHL {
     locationId: string
   ) {
     const res = await this.requests(companyId).post(
-      "/oauth/locationToken",-t      {
+      "/oauth/location-token",
+      {
         companyId,
         locationId,
       },
