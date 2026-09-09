@@ -204,17 +204,25 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
     }
   }
 
-  // Step 3: Search MPP User Assignment records
+  // Step 3: Search MPP User Assignment records using the current v3 contract.
   let records: any[] = [];
   try {
     const searchResp = await ghl
       .requests(activeLocation)
       .post(
         `/objects/custom_objects.mpp_user_assignment/records/search`,
-        { locationId: activeLocation, query: userId, page: 1, pageLimit: 5 },
-        { headers: { Version: "2021-07-28" } }
+        {
+          locationId: activeLocation,
+          query: `ghl_user_id:${userId}`,
+          page: 1,
+          pageLimit: 5,
+        },
+        { headers: { Version: "v3" } }
       );
-    records = searchResp.data?.customObjectRecords ?? [];
+    records =
+      searchResp.data?.records ??
+      searchResp.data?.customObjectRecords ??
+      [];
   } catch (err: any) {
     console.error("[P017-search]", {
       status: err?.response?.status ?? null,
