@@ -204,7 +204,7 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
     }
   }
 
-  // Step 3: Search MPP User Assignment records using the current v3 contract.
+  // Step 3: Search MPP User Assignment records using the working v3 contract.
   let records: any[] = [];
   try {
     const searchResp = await ghl
@@ -213,17 +213,14 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
         `/objects/custom_objects.mpp_user_assignment/records/search`,
         {
           locationId: activeLocation,
-          query: `ghl_user_id:${userId}`,
+          query: userId,
           page: 1,
           pageLimit: 5,
           searchAfter: [],
         },
         { headers: { Version: "v3" } }
       );
-    records =
-      searchResp.data?.records ??
-      searchResp.data?.customObjectRecords ??
-      [];
+    records = searchResp.data?.customObjectRecords ?? [];
   } catch (err: any) {
     console.error("[P017-search]", {
       status: err?.response?.status ?? null,
@@ -238,35 +235,6 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
   );
 
   if (matched.length === 0) {
-    const SIERRA_RECORD_ID = "6a9b05869290d69476eb9c0c";
-    let directGetStatus: number | null = null;
-    let directGetUserIdMatches: boolean | null = null;
-
-    try {
-      const directResp = await ghl
-        .requests(activeLocation)
-        .get(
-          `/objects/custom_objects.mpp_user_assignment/records/${SIERRA_RECORD_ID}`,
-          { headers: { Version: "v3" } }
-        );
-
-      directGetStatus = directResp.status;
-      const directRecord = directResp.data?.record ?? null;
-      directGetUserIdMatches =
-        directRecord?.properties?.ghl_user_id === userId;
-
-      console.log("[P017-direct-get]", {
-        status: directGetStatus,
-        ghlUserIdMatches: directGetUserIdMatches,
-      });
-    } catch (err: any) {
-      directGetStatus = err?.response?.status ?? null;
-      console.error("[P017-direct-get]", {
-        status: directGetStatus,
-        message: err?.message ?? "unknown",
-      });
-    }
-
     return res.json({
       trustedUserId: userId,
       activeLocation,
@@ -274,11 +242,6 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
       assignmentFound: false,
       assignment: null,
       totalSearched: records.length,
-      diagnostic: {
-        searchCount: records.length,
-        directGetStatus,
-        directGetUserIdMatches,
-      },
     });
   }
 
