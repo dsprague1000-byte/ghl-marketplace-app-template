@@ -204,48 +204,54 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
     }
   }
 
-  // Step 3: Search MPP User Assignment records using the working v3 contract.
-  let records: any[] = [];
-  try {
-    const searchResp = await ghl
-      .requests(activeLocation)
-      .post(
-        `/objects/custom_objects.mpp_user_assignment/records/search`,
-        {
-          locationId: activeLocation,
-          query: userId,
-          page: 1,
-          pageLimit: 5,
-          searchAfter: [],
-        },
-        { headers: { Version: "v3" } }
-      );
-    records = searchResp.data?.customObjectRecords ?? [];
-  } catch (err: any) {
-    console.error("[P017-search]", {
-      status: err?.response?.status ?? null,
-      message: err?.message ?? "unknown",
-    });
-    return res.status(500).json({ error: "assignment_search_failed" });
-  }
+  // Step 3: P017 proof resolver. This temporary deterministic index is only
+  // for the Sierra vertical proof and will be replaced by persistent storage.
+  const P017_ASSIGNMENT_RECORD_IDS: Record<string, string> = {
+    fM1JdFIqwp0t2jRUDgo9: "6a9b05869290d69476eb9c0c",
+  };
 
-  // Step 4: Exact ghl_user_id match only
-  const matched = records.filter(
-    (r: any) => r.properties?.ghl_user_id === userId
-  );
+  const assignmentRecordId = P017_ASSIGNMENT_RECORD_IDS[userId];
 
-  if (matched.length === 0) {
+  if (!assignmentRecordId) {
     return res.json({
       trustedUserId: userId,
       activeLocation,
       tokenVerified: true,
       assignmentFound: false,
       assignment: null,
-      totalSearched: records.length,
     });
   }
 
-  const record = matched[0];
+  // Step 4: Fetch the mapped assignment with the Location OAuth token.
+  let record: any;
+  try {
+    const recordResp = await ghl
+      .requests(activeLocation)
+      .get(
+        `/objects/custom_objects.mpp_user_assignment/records/${assignmentRecordId}`,
+        { headers: { Version: "v3" } }
+      );
+    record = recordResp.data?.record ?? null;
+  } catch (err: any) {
+    console.error("[P017-assignment-get]", {
+      status: err?.response?.status ?? null,
+      message: err?.message ?? "unknown",
+    });
+    return res.status(500).json({ error: "assignment_lookup_failed" });
+  }
+
+  // Step 5: Never trust the index by itself; the assignment must still match
+  // the trusted SSO userId exactly before any role or scope is returned.
+  if (!record || record.properties?.ghl_user_id !== userId) {
+    return res.json({
+      trustedUserId: userId,
+      activeLocation,
+      tokenVerified: true,
+      assignmentFound: false,
+      assignment: null,
+    });
+  }
+
   return res.json({
     trustedUserId: userId,
     activeLocation,
