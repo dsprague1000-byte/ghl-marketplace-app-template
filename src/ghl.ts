@@ -13,12 +13,13 @@ export class GHL {
     this.model = new Model();
   }
 
+  async initialize() {
+    return this.model.initialize();
+  }
+
 /**
  * The `authorizationHandler` function handles the authorization process by generating an access token
  * and refresh token pair.
- * @param {string} code - The code parameter is a string that represents the authorization code
- * obtained from the authorization server. It is used to exchange for an access token and refresh token
- * pair.
  */
   async authorizationHandler(code: string) {
     if (!code) {
@@ -68,13 +69,6 @@ export class GHL {
     }
   }
 
-/**
- * The function creates an instance of Axios with a base URL and interceptors for handling
- * authorization and refreshing access tokens.
- * @param {string} resourceId - The `resourceId` parameter is a string that represents the locationId or companyId you want
- * to make api call for.
- * @returns an instance of the Axios library with some custom request and response interceptors.
- */
   requests(resourceId: string) {
     const baseUrl = process.env.GHL_API_DOMAIN;
 
@@ -88,30 +82,25 @@ export class GHL {
 
     axiosInstance.interceptors.request.use(
       async (requestConfig: InternalAxiosRequestConfig) => {
-        try {
-          requestConfig.headers["Authorization"] = `${
-            TokenType.Bearer
-          } ${this.model.getAccessToken(resourceId)}`;
-        } catch (e) {
-          console.error(e);
-        }
+        requestConfig.headers["Authorization"] = `${
+          TokenType.Bearer
+        } ${this.model.getAccessToken(resourceId)}`;
         return requestConfig;
       }
     );
 
-    axios.interceptors.response.use(
+    axiosInstance.interceptors.response.use(
       (response) => response,
-      (error) => {
+      async (error) => {
         const originalRequest = error.config;
 
-        if (error.response.status === 401 && !originalRequest._retry) {
+        if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
           originalRequest._retry = true;
-          return this.refreshAccessToken(resourceId).then(() => {
-            originalRequest.headers.Authorization = `Bearer ${this.model.getAccessToken(
-              resourceId
-            )}`;
-            return axios(originalRequest);
-          });
+          await this.refreshAccessToken(resourceId);
+          originalRequest.headers.Authorization = `Bearer ${this.model.getAccessToken(
+            resourceId
+          )}`;
+          return axios(originalRequest);
         }
 
         return Promise.reject(error);
@@ -121,23 +110,10 @@ export class GHL {
     return axiosInstance;
   }
 
-/**
- * The function checks if an installation exists for a given resource ID i.e locationId or companyId.
- * @param {string} resourceId - The `resourceId` parameter is a string that represents the ID of a
- * resource.
- * @returns a boolean value.
- */
   checkInstallationExists(resourceId: string){
     return !!this.model.getAccessToken(resourceId)
   }
 
-/**
- * The function `getLocationTokenFromCompanyToken` retrieves a location token from a company token and
- * saves the installation information.
- * @param {string} companyId - A string representing the ID of the company.
- * @param {string} locationId - The `locationId` parameter is a string that represents the unique
- * identifier of a location within a company.
- */
   async getLocationTokenFromCompanyToken(
     companyId: string,
     locationId: string
@@ -154,7 +130,7 @@ export class GHL {
         },
       }
     );
-    this.model.saveInstallationInfo(res.data);
+    await this.model.saveInstallationInfo(res.data);
   }
 
   private async refreshAccessToken(resourceId: string) {
@@ -169,10 +145,19 @@ export class GHL {
         }),
         { headers: { "content-type": "application/x-www-form-urlencoded" } }
       );
-      this.model.setAccessToken(resourceId, resp.data.access_token);
-      this.model.setRefreshToken(resourceId, resp.data.refresh_token);
+
+      await this.model.updateTokenPair(
+        resourceId,
+        resp.data.access_token,
+        resp.data.refresh_token,
+        resp.data.expires_in
+      );
     } catch (error: any) {
-      console.error(error?.response?.data);
+      console.error("[P019A-refresh]", {
+        status: error?.response?.status ?? null,
+        message: error?.message ?? "unknown",
+      });
+      throw error;
     }
   }
 
@@ -190,8 +175,9 @@ export class GHL {
         }),
         { headers: { "content-type": "application/x-www-form-urlencoded" } }
       );
-      this.model.saveInstallationInfo(resp.data);
-      // P018 diagnostic — safe fields only, no tokens or secrets
+
+      await this.model.saveInstallationInfo(resp.data);
+
       console.log('[P018-diag] exchange success:', JSON.stringify({
         http_status: resp.status,
         token_present: !!resp.data.access_token,
@@ -203,7 +189,6 @@ export class GHL {
         stored_key: resp.data.locationId || resp.data.companyId || null,
       }));
     } catch (error: any) {
-      // P018 diagnostic — HTTP error: log safe fields only; network error: log message only
       if (error?.response) {
         console.error('[P018-diag] exchange HTTP error:', JSON.stringify({
           status: error.response.status,
@@ -213,6 +198,7 @@ export class GHL {
       } else {
         console.error('[P018-diag] exchange network/config error:', error?.message ?? 'unknown');
       }
+      throw error;
     }
   }
 }
