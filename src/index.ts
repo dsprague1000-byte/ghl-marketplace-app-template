@@ -271,6 +271,20 @@ app.get("/", function (req, res) {
   res.sendFile(path + "index.html");
 });
 
-app.listen(port, () => {
-  console.log(`GHL app listening on port ${port}`);
-});
+async function start() {
+  try {
+    const hydratedCount = await ghl.initialize();
+    console.log("[P019A] OAuth store ready", { hydratedCount });
+
+    app.listen(port, () => {
+      console.log(`GHL app listening on port ${port}`);
+    });
+  } catch (error: any) {
+    console.error("[P019A] startup failed", {
+      message: error?.message ?? "unknown",
+    });
+    process.exit(1);
+  }
+}
+
+start();
