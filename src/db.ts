@@ -127,3 +127,65 @@ export async function updateOAuthTokenPair(details: {
     throw new Error("OAuth installation not found during token refresh");
   }
 }
+
+export async function initializeAssignmentIndex() {
+  const db = getPool();
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS mpp_assignment_index (
+      location_id TEXT NOT NULL,
+      ghl_user_id TEXT NOT NULL,
+      record_id   TEXT NOT NULL,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (location_id, ghl_user_id),
+      UNIQUE (location_id, record_id)
+    )
+  `);
+
+  // P019B proof fixture: idempotent seed of the already-verified Sierra mapping.
+  await db.query(
+    `
+      INSERT INTO mpp_assignment_index (
+        location_id,
+        ghl_user_id,
+        record_id,
+        updated_at
+      )
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (location_id, ghl_user_id)
+      DO UPDATE SET
+        record_id = EXCLUDED.record_id,
+        updated_at = NOW()
+    `,
+    [
+      "e44pA2hEK8BXwer0eNYB",
+      "fM1JdFIqwp0t2jRUDgo9",
+      "6a9b05869290d69476eb9c0c",
+    ]
+  );
+
+  const countResult = await db.query(
+    `SELECT COUNT(*)::int AS count FROM mpp_assignment_index`
+  );
+
+  return countResult.rows[0]?.count ?? 0;
+}
+
+export async function getAssignmentRecordId(
+  locationId: string,
+  ghlUserId: string
+): Promise<string | null> {
+  const db = getPool();
+
+  const result = await db.query(
+    `
+      SELECT record_id
+      FROM mpp_assignment_index
+      WHERE location_id = $1 AND ghl_user_id = $2
+      LIMIT 1
+    `,
+    [locationId, ghlUserId]
+  );
+
+  return result.rows[0]?.record_id ?? null;
+}
