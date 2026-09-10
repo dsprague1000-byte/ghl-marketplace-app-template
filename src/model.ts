@@ -1,3 +1,9 @@
+import {
+  initializeOAuthStore,
+  updateOAuthTokenPair,
+  upsertOAuthInstallation,
+} from "./db";
+
 export enum AppUserType {
   Company = "Company",
   Location = "Location",
@@ -19,73 +25,92 @@ export interface InstallationDetails {
 }
 
 /* The Model class is responsible for saving and retrieving installation details, access tokens, and
-refresh tokens. */
+refresh tokens. Postgres is authoritative; installationObjects is the in-process cache. */
 export class Model {
   public installationObjects: { [key: string]: InstallationDetails } = {};
 
-/**
- * The function saves installation information based on either the location ID or the company ID.
- * @param {InstallationDetails} details - The `details` parameter is an object of type
- * `InstallationDetails`.
- */
-  async saveInstallationInfo(details: InstallationDetails) {
-    if (details.locationId) {
-      this.installationObjects[details.locationId] = details;
-    } else if (details.companyId) {
-      this.installationObjects[details.companyId] = details;
+  async initialize() {
+    const rows = await initializeOAuthStore();
+    this.installationObjects = {};
+
+    for (const row of rows) {
+      const expiresAt = new Date(row.expires_at).getTime();
+      const expiresIn = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+
+      this.installationObjects[row.resource_id] = {
+        access_token: row.access_token,
+        token_type: TokenType.Bearer,
+        expires_in: expiresIn,
+        refresh_token: row.refresh_token,
+        scope: "",
+        userType: row.user_type as AppUserType,
+        companyId: row.company_id ?? undefined,
+        locationId: row.location_id ?? undefined,
+      };
     }
+
+    return rows.length;
   }
 
 /**
- * The function `getAccessToken` returns the access token associated with a given resource ID i.e companyId or locationId from the
- * `installationObjects` object.
- * @param {string} resourceId - The `resourceId` parameter is a string that represents either locationId or companyId
- * It is used to retrieve the access token associated with that resource.
- * @returns The access token associated with the given resourceId.
+ * Persist installation information before adding it to the in-memory cache.
  */
+  async saveInstallationInfo(details: InstallationDetails) {
+    const resourceId = details.locationId || details.companyId;
+    if (!resourceId) {
+      throw new Error("OAuth installation is missing resource ID");
+    }
+    if (!details.access_token || !details.refresh_token) {
+      throw new Error("OAuth installation is missing token pair");
+    }
+
+    const resourceType = details.locationId ? "location" : "company";
+    const expiresAt = new Date(Date.now() + details.expires_in * 1000);
+
+    await upsertOAuthInstallation({
+      resourceId,
+      resourceType,
+      companyId: details.companyId,
+      locationId: details.locationId,
+      userType: details.userType,
+      accessToken: details.access_token,
+      refreshToken: details.refresh_token,
+      expiresAt,
+    });
+
+    this.installationObjects[resourceId] = details;
+  }
+
   getAccessToken(resourceId: string) {
     return this.installationObjects[resourceId]?.access_token;
   }
 
-
-/**
- * The function sets an access token for a specific resource ID in an installation object.
- * @param {string} resourceId - The resourceId parameter is a string that represents the unique
- * identifier of a resource. It is used to identify a specific installation object in the
- * installationObjects array.
- * @param {string} token - The "token" parameter is a string that represents the access token that you
- * want to set for a specific resource.
- */
-  setAccessToken(resourceId: string, token: string) {
-    if (this.installationObjects[resourceId]) {
-        this.installationObjects[resourceId].access_token = token;
-    }
-  }
-
-/**
- * The function `getRefreshToken` returns the refresh_token associated with a given location or company from the
- * installationObjects object.
- * @param {string} resourceId - The resourceId parameter is a string that represents the unique
- * identifier of a resource.
- * @returns The companyId associated with the installation object for the given resourceId.
- */
   getRefreshToken(resourceId: string) {
     return this.installationObjects[resourceId]?.refresh_token;
   }
 
-/**
- * The function saves the refresh token for a specific resource i.e. location or company.
- * @param {string} resourceId - The resourceId parameter is a string that represents the unique
- * identifier of a resource. It is used to identify a specific installation object in the
- * installationObjects array.
- * @param {string} token - The "token" parameter is a string that represents the refresh token. A
- * refresh token is a credential used to obtain a new access token when the current access token
- * expires. It is typically used in authentication systems to maintain a user's session without
- * requiring them to re-enter their credentials.
- */
-  setRefreshToken(resourceId: string, token: string) {
-    if (this.installationObjects[resourceId]) {
-        this.installationObjects[resourceId].refresh_token = token;
+  async updateTokenPair(
+    resourceId: string,
+    accessToken: string,
+    refreshToken: string,
+    expiresIn: number
+  ) {
+    const installation = this.installationObjects[resourceId];
+    if (!installation) {
+      throw new Error("OAuth installation not found during token refresh");
     }
+
+    const expiresAt = new Date(Date.now() + expiresIn * 1000);
+
+    await updateOAuthTokenPair({
+      resourceId,
+      accessToken,
+      refreshToken,
+      expiresAt,
+    });
+
+    installation.access_token = accessToken;
+    installation.refresh_token = refreshToken;
+    installation.expires_in = expiresIn;
   }
 }
