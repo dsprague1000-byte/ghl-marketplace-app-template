@@ -216,6 +216,7 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
           query: `ghl_user_id:${userId}`,
           page: 1,
           pageLimit: 5,
+          searchAfter: [],
         },
         { headers: { Version: "v3" } }
       );
@@ -237,6 +238,35 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
   );
 
   if (matched.length === 0) {
+    const SIERRA_RECORD_ID = "6a9b05869290d69476eb9c0c";
+    let directGetStatus: number | null = null;
+    let directGetUserIdMatches: boolean | null = null;
+
+    try {
+      const directResp = await ghl
+        .requests(activeLocation)
+        .get(
+          `/objects/custom_objects.mpp_user_assignment/records/${SIERRA_RECORD_ID}`,
+          { headers: { Version: "v3" } }
+        );
+
+      directGetStatus = directResp.status;
+      const directRecord = directResp.data?.record ?? null;
+      directGetUserIdMatches =
+        directRecord?.properties?.ghl_user_id === userId;
+
+      console.log("[P017-direct-get]", {
+        status: directGetStatus,
+        ghlUserIdMatches: directGetUserIdMatches,
+      });
+    } catch (err: any) {
+      directGetStatus = err?.response?.status ?? null;
+      console.error("[P017-direct-get]", {
+        status: directGetStatus,
+        message: err?.message ?? "unknown",
+      });
+    }
+
     return res.json({
       trustedUserId: userId,
       activeLocation,
@@ -244,6 +274,11 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
       assignmentFound: false,
       assignment: null,
       totalSearched: records.length,
+      diagnostic: {
+        searchCount: records.length,
+        directGetStatus,
+        directGetUserIdMatches,
+      },
     });
   }
 
