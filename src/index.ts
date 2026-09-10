@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { GHL } from "./ghl";
 import * as CryptoJS from 'crypto-js'
 import { json } from "body-parser";
+import { getAssignmentRecordId, initializeAssignmentIndex } from "./db";
 
 const path = __dirname + "/ui/dist/";
 
@@ -139,7 +140,7 @@ app.get("/oauth/token-status", (req: Request, res: Response) => {
   });
 });
 
-/* P017: Assignment context — resolves MPP role and scope for the authenticated viewer.
+/* P017/P019B: Assignment context — resolves MPP role and scope for the authenticated viewer.
    Accepts raw GHL SSO key; derives trusted identity server-side only.
    Never trusts userId or activeLocation sent directly from the browser. */
 app.post("/assignment-context", async (req: Request, res: Response) => {
@@ -149,7 +150,6 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "SSO key required" });
   }
 
-  // Step 1: Decrypt SSO key server-side — trusted identity only
   let ssoData: any;
   try {
     ssoData = ghl.decryptSSOData(key);
@@ -166,9 +166,6 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
     });
   }
 
-  // Step 2: Ensure a Location token is available for the SSO location.
-  // Agency bulk installs produce a Company token; exchange it through the
-  // template's existing Company -> Location token helper when needed.
   if (!ghl.checkInstallationExists(activeLocation)) {
     const SPOKE_COMPANY_ID = "NUAR0gljpx3i4RfDQPCf";
     const companyInst = ghl.model.installationObjects[SPOKE_COMPANY_ID];
@@ -204,13 +201,17 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
     }
   }
 
-  // Step 3: P017 proof resolver. This temporary deterministic index is only
-  // for the Sierra vertical proof and will be replaced by persistent storage.
-  const P017_ASSIGNMENT_RECORD_IDS: Record<string, string> = {
-    fM1JdFIqwp0t2jRUDgo9: "6a9b05869290d69476eb9c0c",
-  };
-
-  const assignmentRecordId = P017_ASSIGNMENT_RECORD_IDS[userId];
+  // P019B: Postgres is the persistent locator from trusted identity to GHL record ID.
+  // The fetched GHL record remains authoritative and must match the trusted SSO userId.
+  let assignmentRecordId: string | null = null;
+  try {
+    assignmentRecordId = await getAssignmentRecordId(activeLocation, userId);
+  } catch (err: any) {
+    console.error("[P019B-index-lookup]", {
+      message: err?.message ?? "unknown",
+    });
+    return res.status(500).json({ error: "assignment_index_lookup_failed" });
+  }
 
   if (!assignmentRecordId) {
     return res.json({
@@ -222,7 +223,6 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
     });
   }
 
-  // Step 4: Fetch the mapped assignment with the Location OAuth token.
   let record: any;
   try {
     const recordResp = await ghl
@@ -240,8 +240,6 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
     return res.status(500).json({ error: "assignment_lookup_failed" });
   }
 
-  // Step 5: Never trust the index by itself; the assignment must still match
-  // the trusted SSO userId exactly before any role or scope is returned.
   if (!record || record.properties?.ghl_user_id !== userId) {
     return res.json({
       trustedUserId: userId,
@@ -274,13 +272,15 @@ app.get("/", function (req, res) {
 async function start() {
   try {
     const hydratedCount = await ghl.initialize();
+    const assignmentIndexCount = await initializeAssignmentIndex();
     console.log("[P019A] OAuth store ready", { hydratedCount });
+    console.log("[P019B] Assignment index ready", { assignmentIndexCount });
 
     app.listen(port, () => {
       console.log(`GHL app listening on port ${port}`);
     });
   } catch (error: any) {
-    console.error("[P019A] startup failed", {
+    console.error("[P019] startup failed", {
       message: error?.message ?? "unknown",
     });
     process.exit(1);
