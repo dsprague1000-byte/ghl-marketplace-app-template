@@ -1,71 +1,200 @@
 <template>
-  <main class="probe-shell">
-    <section class="probe-card">
-      <p class="eyebrow">MPP-P017</p>
-      <h1>HighLevel User Context Probe</h1>
+  <main class="app-shell">
+    <section class="app-card">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">MPP V1</p>
+          <h1>Membership Performance Platform</h1>
+          <p v-if="context.userName" class="subhead">
+            {{ context.userName }} · {{ roleLabel }} · {{ context.activeLocation }}
+          </p>
+        </div>
+        <span v-if="assignmentFound" class="status-pill" :class="isActive ? 'active' : 'inactive'">
+          {{ isActive ? 'Active' : 'Inactive' }}
+        </span>
+      </header>
 
-      <p v-if="loading">
-        Requesting secured HighLevel viewer context...
-      </p>
+      <p v-if="loading" class="message">Loading your MPP workspace…</p>
+      <p v-else-if="error" class="message error">{{ error }}</p>
 
-      <p v-else-if="error" class="error">
-        {{ error }}
-      </p>
+      <template v-else-if="!assignmentFound">
+        <section class="empty-state">
+          <h2>No MPP assignment found</h2>
+          <p>Your HighLevel identity was verified, but no MPP assignment is indexed for this location.</p>
+        </section>
+      </template>
 
       <template v-else>
-        <dl>
-          <div>
-            <dt>Current Viewer</dt>
-            <dd>{{ context.userName || 'Not returned' }}</dd>
-          </div>
-          <div>
-            <dt>Trusted User ID</dt>
-            <dd>{{ context.userId || 'Not returned' }}</dd>
-          </div>
-          <div>
-            <dt>Active Location</dt>
-            <dd>{{ context.activeLocation || 'Not returned' }}</dd>
-          </div>
-          <div>
-            <dt>GHL Role</dt>
-            <dd>{{ context.role || 'Not returned' }}</dd>
-          </div>
-        </dl>
-
-        <section class="assignment-section">
-          <h2>MPP Assignment</h2>
-          <dl v-if="assignment && assignment.assignmentFound">
-            <div>
-              <dt>MPP Role</dt>
-              <dd>{{ assignment.assignment.mpp_role || '—' }}</dd>
-            </div>
-            <div>
-              <dt>Scope Type</dt>
-              <dd>{{ assignment.assignment.scope_type || '—' }}</dd>
-            </div>
-            <div>
-              <dt>Active</dt>
-              <dd>{{ assignment.assignment.active || '—' }}</dd>
-            </div>
-            <div>
-              <dt>Assignment Name</dt>
-              <dd>{{ assignment.assignment.assignment_name || '—' }}</dd>
-            </div>
-                        <div>
-                                        <dt>Assignment GHL User ID</dt>
-                                        <dd>{{ assignment.assignment.ghl_user_id || '—' }}</dd>
-                                      </div>
-          </dl>
-          <p v-else-if="assignment && assignment.error" class="error">
-            Assignment error: {{ assignment.error }}
-          </p>
-          <p v-else-if="assignment" class="no-assignment">
-            No MPP assignment found for this user (searched {{ assignment.totalSearched }} records).
-          </p>
-          <p v-else class="no-assignment">
-            Assignment lookup unavailable.
-          </p>
+        <section v-if="!isActive" class="empty-state">
+          <h2>Assignment inactive</h2>
+          <p>Your MPP assignment exists but is not currently active.</p>
         </section>
+
+        <template v-else>
+          <nav class="nav-strip">
+            <button
+              v-for="item in navItems"
+              :key="item.key"
+              class="nav-button"
+              :class="{ selected: activeView === item.key }"
+              @click="activeView = item.key"
+            >
+              {{ item.label }}
+            </button>
+          </nav>
+
+          <section v-if="activeView === 'overview'" class="panel-grid">
+            <article class="metric-card">
+              <span>Opportunities</span>
+              <strong>{{ rollup.totals?.opportunities || 0 }}</strong>
+            </article>
+            <article class="metric-card">
+              <span>Memberships Sold</span>
+              <strong>{{ rollup.totals?.memberships_sold || 0 }}</strong>
+            </article>
+            <article class="metric-card">
+              <span>Conversion</span>
+              <strong>{{ percent(rollup.totals?.conversionRate) }}</strong>
+            </article>
+            <article class="metric-card">
+              <span>Pending Review</span>
+              <strong>{{ rollup.totals?.pending_count || 0 }}</strong>
+            </article>
+
+            <article class="wide-card">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">{{ rollup.scope === 'self' ? 'My performance' : 'Location performance' }}</p>
+                  <h2>{{ rollup.month || currentMonth }}</h2>
+                </div>
+                <input v-model="selectedMonth" type="month" @change="loadRollup" />
+              </div>
+
+              <table v-if="rollup.sellers && rollup.sellers.length" class="data-table">
+                <thead>
+                  <tr>
+                    <th>Seller</th>
+                    <th>Opportunities</th>
+                    <th>Sold</th>
+                    <th>Conversion</th>
+                    <th>Pending</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="seller in rollup.sellers" :key="seller.seller_user_id">
+                    <td>{{ seller.seller_name }}</td>
+                    <td>{{ seller.opportunities }}</td>
+                    <td>{{ seller.memberships_sold }}</td>
+                    <td>{{ percent(seller.conversionRate) }}</td>
+                    <td>{{ seller.pending_count }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else class="muted">No activity recorded for this month yet.</p>
+            </article>
+          </section>
+
+          <section v-if="activeView === 'submit'" class="wide-card">
+            <p class="eyebrow">Seller Activity</p>
+            <h2>Submit Shift Log</h2>
+            <form class="form-grid" @submit.prevent="submitShift">
+              <label>
+                Shift date
+                <input v-model="shiftForm.shiftDate" type="date" required />
+              </label>
+              <label>
+                Opportunities
+                <input v-model.number="shiftForm.opportunities" type="number" min="0" step="1" required />
+              </label>
+              <label>
+                Memberships sold
+                <input v-model.number="shiftForm.membershipsSold" type="number" min="0" step="1" required />
+              </label>
+              <label class="full-span">
+                Notes
+                <textarea v-model="shiftForm.notes" rows="4" maxlength="2000" placeholder="Optional context for your manager"></textarea>
+              </label>
+              <div class="full-span form-actions">
+                <button class="primary-button" type="submit" :disabled="saving">
+                  {{ saving ? 'Saving…' : 'Submit shift' }}
+                </button>
+                <span v-if="actionMessage" class="action-message">{{ actionMessage }}</span>
+              </div>
+            </form>
+          </section>
+
+          <section v-if="activeView === 'history'" class="wide-card">
+            <p class="eyebrow">Seller Activity</p>
+            <h2>My Recent Shifts</h2>
+            <table v-if="shiftLogs.length" class="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Opportunities</th>
+                  <th>Sold</th>
+                  <th>Conversion</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="log in shiftLogs" :key="log.id">
+                  <td>{{ shortDate(log.shift_date) }}</td>
+                  <td>{{ log.opportunities }}</td>
+                  <td>{{ log.memberships_sold }}</td>
+                  <td>{{ percent(rate(log.memberships_sold, log.opportunities)) }}</td>
+                  <td><span class="mini-pill">{{ log.status }}</span></td>
+                </tr>
+              </tbody>
+            </table>
+            <p v-else class="muted">No shift logs yet.</p>
+          </section>
+
+          <section v-if="activeView === 'review'" class="wide-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Manager Review</p>
+                <h2>Pending Shift Logs</h2>
+              </div>
+              <button class="secondary-button" @click="loadReviewQueue">Refresh</button>
+            </div>
+
+            <div v-if="reviewQueue.length" class="review-list">
+              <article v-for="log in reviewQueue" :key="log.id" class="review-item">
+                <div>
+                  <strong>{{ log.seller_name }}</strong>
+                  <span>{{ shortDate(log.shift_date) }}</span>
+                  <span>{{ log.memberships_sold }} sold / {{ log.opportunities }} opportunities · {{ percent(rate(log.memberships_sold, log.opportunities)) }}</span>
+                  <small v-if="log.notes">{{ log.notes }}</small>
+                </div>
+                <div class="review-actions">
+                  <button class="approve-button" @click="reviewLog(log.id, 'verified')">Verify</button>
+                  <button class="reject-button" @click="reviewLog(log.id, 'rejected')">Reject</button>
+                </div>
+              </article>
+            </div>
+            <p v-else class="muted">No shift logs are waiting for review.</p>
+          </section>
+
+          <section v-if="activeView === 'provision'" class="wide-card">
+            <p class="eyebrow">MPP Administration</p>
+            <h2>Provision User Assignment</h2>
+            <p class="muted">
+              Enter the GHL record ID for an existing MPP User Assignment. MPP will validate the record and index its GHL User ID for this location.
+            </p>
+            <form class="form-grid" @submit.prevent="provisionAssignment">
+              <label class="full-span">
+                MPP User Assignment record ID
+                <input v-model.trim="provisionRecordId" required placeholder="GHL custom object record ID" />
+              </label>
+              <div class="full-span form-actions">
+                <button class="primary-button" type="submit" :disabled="saving">
+                  {{ saving ? 'Provisioning…' : 'Provision assignment' }}
+                </button>
+                <span v-if="actionMessage" class="action-message">{{ actionMessage }}</span>
+              </div>
+            </form>
+          </section>
+        </template>
       </template>
     </section>
   </main>
@@ -75,117 +204,238 @@
 export default {
   name: 'App',
   data() {
+    const now = new Date()
     return {
       loading: true,
+      saving: false,
       error: '',
+      actionMessage: '',
+      ssoKey: '',
       context: {},
-      assignment: null
+      assignment: null,
+      capabilities: [],
+      activeView: 'overview',
+      selectedMonth: now.toISOString().slice(0, 7),
+      rollup: { totals: {}, sellers: [] },
+      shiftLogs: [],
+      reviewQueue: [],
+      provisionRecordId: '',
+      shiftForm: {
+        shiftDate: now.toISOString().slice(0, 10),
+        opportunities: 0,
+        membershipsSold: 0,
+        notes: ''
+      }
+    }
+  },
+  computed: {
+    assignmentFound() {
+      return !!this.assignment?.assignmentFound
+    },
+    role() {
+      return this.assignment?.assignment?.mpp_role || ''
+    },
+    roleLabel() {
+      return this.role ? this.role.replaceAll('_', ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Unassigned'
+    },
+    isActive() {
+      return String(this.assignment?.assignment?.active || '').toLowerCase() === 'yes'
+    },
+    currentMonth() {
+      return this.selectedMonth
+    },
+    navItems() {
+      const items = [{ key: 'overview', label: 'Overview' }]
+      if (this.capabilities.includes('submit_shift')) {
+        items.push({ key: 'submit', label: 'Submit Shift' }, { key: 'history', label: 'My History' })
+      }
+      if (this.capabilities.includes('review_logs')) {
+        items.push({ key: 'review', label: 'Review Queue' })
+      }
+      if (this.capabilities.includes('provision_assignments')) {
+        items.push({ key: 'provision', label: 'Provision Users' })
+      }
+      return items
     }
   },
   async mounted() {
     try {
-      // Get raw SSO key from GHL parent frame
-      const ssoKey = await new Promise((resolve) => {
-        window.parent.postMessage({ message: "REQUEST_USER_DATA" }, "*");
-        window.addEventListener("message", ({ data }) => {
-          if (data.message === "REQUEST_USER_DATA_RESPONSE") {
-            resolve(data.payload);
-          }
-        });
-      });
-
-      // Decrypt context for display
+      this.ssoKey = await this.requestSsoKey()
       const ctxRes = await fetch('/decrypt-sso', {
         method: 'POST',
         headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: ssoKey })
-      });
-      this.context = await ctxRes.json();
+        body: JSON.stringify({ key: this.ssoKey })
+      })
+      this.context = await ctxRes.json()
 
-      // P017: server-side assignment lookup — sends raw SSO key only
-      const assignRes = await fetch('/assignment-context', {
+      const assignment = await this.api('/assignment-context', {})
+      this.assignment = assignment
+      this.capabilities = assignment.capabilities || []
+
+      if (assignment.assignmentFound && String(assignment.assignment?.active || '').toLowerCase() === 'yes') {
+        await this.loadRollup()
+        if (this.capabilities.includes('submit_shift')) await this.loadShiftLogs()
+        if (this.capabilities.includes('review_logs')) await this.loadReviewQueue()
+      }
+    } catch (error) {
+      console.error('MPP workspace failed', error)
+      this.error = error.message || 'Unable to load MPP workspace.'
+    } finally {
+      this.loading = false
+    }
+  },
+  methods: {
+    requestSsoKey() {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('HighLevel user context timed out.')), 10000)
+        const handler = ({ data }) => {
+          if (data?.message === 'REQUEST_USER_DATA_RESPONSE') {
+            clearTimeout(timer)
+            window.removeEventListener('message', handler)
+            resolve(data.payload)
+          }
+        }
+        window.addEventListener('message', handler)
+        window.parent.postMessage({ message: 'REQUEST_USER_DATA' }, '*')
+      })
+    },
+    async api(url, body = {}) {
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: ssoKey })
-      });
-      this.assignment = await assignRes.json();
-
-    } catch (error) {
-      console.error('MPP-P017 context probe failed', error);
-      this.error = 'Unable to retrieve secured HighLevel user context.';
-    } finally {
-      this.loading = false;
+        body: JSON.stringify({ key: this.ssoKey, ...body })
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`)
+      return data
+    },
+    async loadRollup() {
+      try {
+        this.rollup = await this.api('/performance/rollup', { month: this.selectedMonth })
+      } catch (error) {
+        this.actionMessage = error.message
+      }
+    },
+    async loadShiftLogs() {
+      const data = await this.api('/seller/shift-logs')
+      this.shiftLogs = data.logs || []
+    },
+    async loadReviewQueue() {
+      const data = await this.api('/manager/review-queue')
+      this.reviewQueue = data.logs || []
+    },
+    async submitShift() {
+      this.saving = true
+      this.actionMessage = ''
+      try {
+        await this.api('/seller/shift-log', this.shiftForm)
+        this.actionMessage = 'Shift submitted for manager review.'
+        this.shiftForm.opportunities = 0
+        this.shiftForm.membershipsSold = 0
+        this.shiftForm.notes = ''
+        await Promise.all([this.loadShiftLogs(), this.loadRollup()])
+      } catch (error) {
+        this.actionMessage = error.message
+      } finally {
+        this.saving = false
+      }
+    },
+    async reviewLog(logId, decision) {
+      this.actionMessage = ''
+      try {
+        await this.api('/manager/review-shift', { logId, decision })
+        await Promise.all([this.loadReviewQueue(), this.loadRollup()])
+      } catch (error) {
+        this.actionMessage = error.message
+      }
+    },
+    async provisionAssignment() {
+      this.saving = true
+      this.actionMessage = ''
+      try {
+        const result = await this.api('/admin/assignment-provision', { recordId: this.provisionRecordId })
+        this.actionMessage = `Provisioned ${result.assignment.assignment_name || result.assignment.ghl_user_id}.`
+        this.provisionRecordId = ''
+      } catch (error) {
+        this.actionMessage = error.message
+      } finally {
+        this.saving = false
+      }
+    },
+    rate(sold, opportunities) {
+      const o = Number(opportunities || 0)
+      return o > 0 ? Number(sold || 0) / o : 0
+    },
+    percent(value) {
+      return `${(Number(value || 0) * 100).toFixed(1)}%`
+    },
+    shortDate(value) {
+      if (!value) return '—'
+      return String(value).slice(0, 10)
     }
   }
 }
 </script>
 
 <style>
-#app {
-  font-family: Avenir, Helvetica, Arial, sans-serif;
-  color: #1f2937;
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  color: #172033;
+  background: #eef2f6;
 }
-body {
-  margin: 0;
-  background: #f3f4f6;
-}
-.probe-shell {
-  min-height: 100vh;
-  display: grid;
-  place-items: start center;
-  padding: 32px;
-  box-sizing: border-box;
-}
-.probe-card {
-  width: min(680px, 100%);
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  padding: 28px;
-  box-sizing: border-box;
-}
-.eyebrow {
-  margin: 0 0 8px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-}
-h1 {
-  margin: 0 0 24px;
-  font-size: 28px;
-}
-h2 {
-  margin: 24px 0 12px;
-  font-size: 18px;
-  border-top: 2px solid #e5e7eb;
-  padding-top: 20px;
-}
-.error {
-  font-weight: 700;
-  color: #dc2626;
-}
-.no-assignment {
-  color: #6b7280;
-  font-style: italic;
-}
-.assignment-section {
-  margin-top: 8px;
-}
-dl {
-  margin: 0;
-}
-dl > div {
-  display: grid;
-  grid-template-columns: minmax(140px, 0.8fr) minmax(0, 1.8fr);
-  gap: 16px;
-  padding: 14px 0;
-  border-top: 1px solid #e5e7eb;
-}
-dt {
-  font-weight: 700;
-}
-dd {
-  margin: 0;
-  overflow-wrap: anywhere;
+* { box-sizing: border-box; }
+body { margin: 0; background: #eef2f6; }
+button, input, textarea { font: inherit; }
+.app-shell { min-height: 100vh; padding: 28px; }
+.app-card { max-width: 1080px; margin: 0 auto; }
+.app-header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; margin-bottom: 22px; }
+.eyebrow { margin: 0 0 6px; font-size: 11px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color: #526071; }
+h1 { margin: 0; font-size: 30px; line-height: 1.12; }
+h2 { margin: 0; font-size: 20px; }
+.subhead, .muted { color: #697586; }
+.subhead { margin: 8px 0 0; }
+.status-pill, .mini-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 700; text-transform: capitalize; }
+.status-pill.active { background: #dff7e9; color: #17643a; }
+.status-pill.inactive { background: #fde8e8; color: #9b1c1c; }
+.mini-pill { padding: 4px 8px; background: #eef2f6; }
+.message, .empty-state, .wide-card, .metric-card { background: white; border: 1px solid #dfe5ec; border-radius: 14px; }
+.message, .empty-state { padding: 24px; }
+.error { color: #b42318; }
+.nav-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.nav-button, .secondary-button { border: 1px solid #ccd5df; background: white; border-radius: 9px; padding: 9px 13px; cursor: pointer; font-weight: 700; color: #344054; }
+.nav-button.selected { background: #172033; color: white; border-color: #172033; }
+.panel-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.metric-card { padding: 18px; }
+.metric-card span { display: block; color: #697586; font-size: 13px; margin-bottom: 8px; }
+.metric-card strong { font-size: 28px; }
+.wide-card { padding: 22px; grid-column: 1 / -1; }
+.section-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; }
+.form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 20px; }
+.form-grid label { display: grid; gap: 7px; font-weight: 700; font-size: 13px; }
+.full-span { grid-column: 1 / -1; }
+input, textarea { width: 100%; border: 1px solid #cbd5df; border-radius: 9px; padding: 10px 11px; background: white; color: #172033; }
+textarea { resize: vertical; }
+.form-actions { display: flex; align-items: center; gap: 14px; }
+.primary-button, .approve-button, .reject-button { border: 0; border-radius: 9px; padding: 10px 14px; cursor: pointer; font-weight: 800; }
+.primary-button { background: #172033; color: white; }
+.approve-button { background: #dff7e9; color: #17643a; }
+.reject-button { background: #fde8e8; color: #9b1c1c; }
+button:disabled { opacity: .55; cursor: wait; }
+.action-message { color: #526071; font-size: 13px; }
+.data-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+.data-table th, .data-table td { border-top: 1px solid #e4e9ef; padding: 11px 9px; text-align: left; font-size: 13px; }
+.data-table th { color: #697586; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.review-list { display: grid; gap: 10px; }
+.review-item { display: flex; justify-content: space-between; gap: 18px; padding: 14px; border: 1px solid #e4e9ef; border-radius: 10px; }
+.review-item > div:first-child { display: grid; gap: 4px; }
+.review-item span, .review-item small { color: #697586; }
+.review-actions { display: flex; gap: 8px; align-items: center; }
+@media (max-width: 760px) {
+  .app-shell { padding: 16px; }
+  .panel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .form-grid { grid-template-columns: 1fr; }
+  .full-span { grid-column: 1; }
+  .data-table { display: block; overflow-x: auto; }
+  .review-item { flex-direction: column; }
 }
 </style>
