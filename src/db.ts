@@ -142,7 +142,8 @@ export async function initializeAssignmentIndex() {
     )
   `);
 
-  // P019B proof fixture: idempotent seed of the already-verified Sierra mapping.
+  // Proven P019B fixture. P020 adds normal runtime provisioning so future users
+  // no longer require code changes or migration seeds.
   await db.query(
     `
       INSERT INTO mpp_assignment_index (
@@ -188,4 +189,261 @@ export async function getAssignmentRecordId(
   );
 
   return result.rows[0]?.record_id ?? null;
+}
+
+export async function upsertAssignmentIndex(
+  locationId: string,
+  ghlUserId: string,
+  recordId: string
+) {
+  const db = getPool();
+
+  await db.query(
+    `
+      INSERT INTO mpp_assignment_index (
+        location_id,
+        ghl_user_id,
+        record_id,
+        updated_at
+      )
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (location_id, ghl_user_id)
+      DO UPDATE SET
+        record_id = EXCLUDED.record_id,
+        updated_at = NOW()
+    `,
+    [locationId, ghlUserId, recordId]
+  );
+}
+
+export async function initializePerformanceStore() {
+  const db = getPool();
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS mpp_shift_logs (
+      id                   BIGSERIAL PRIMARY KEY,
+      location_id          TEXT NOT NULL,
+      seller_user_id       TEXT NOT NULL,
+      seller_name          TEXT NOT NULL,
+      assignment_record_id TEXT NOT NULL,
+      shift_date           DATE NOT NULL,
+      opportunities        INTEGER NOT NULL CHECK (opportunities >= 0),
+      memberships_sold     INTEGER NOT NULL CHECK (memberships_sold >= 0),
+      notes                TEXT NOT NULL DEFAULT '',
+      status               TEXT NOT NULL DEFAULT 'submitted'
+                           CHECK (status IN ('submitted', 'verified', 'rejected')),
+      verified_by          TEXT,
+      verified_at          TIMESTAMPTZ,
+      created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_mpp_shift_logs_location_date
+    ON mpp_shift_logs (location_id, shift_date DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_mpp_shift_logs_seller_date
+    ON mpp_shift_logs (location_id, seller_user_id, shift_date DESC)
+  `);
+}
+
+export async function createShiftLog(details: {
+  locationId: string;
+  sellerUserId: string;
+  sellerName: string;
+  assignmentRecordId: string;
+  shiftDate: string;
+  opportunities: number;
+  membershipsSold: number;
+  notes?: string;
+}) {
+  const db = getPool();
+
+  const result = await db.query(
+    `
+      INSERT INTO mpp_shift_logs (
+        location_id,
+        seller_user_id,
+        seller_name,
+        assignment_record_id,
+        shift_date,
+        opportunities,
+        memberships_sold,
+        notes
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING
+        id,
+        shift_date,
+        opportunities,
+        memberships_sold,
+        notes,
+        status,
+        created_at
+    `,
+    [
+      details.locationId,
+      details.sellerUserId,
+      details.sellerName,
+      details.assignmentRecordId,
+      details.shiftDate,
+      details.opportunities,
+      details.membershipsSold,
+      details.notes ?? "",
+    ]
+  );
+
+  return result.rows[0];
+}
+
+export async function getSellerShiftLogs(
+  locationId: string,
+  sellerUserId: string,
+  limit = 20
+) {
+  const db = getPool();
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+
+  const result = await db.query(
+    `
+      SELECT
+        id,
+        shift_date,
+        opportunities,
+        memberships_sold,
+        notes,
+        status,
+        verified_by,
+        verified_at,
+        created_at
+      FROM mpp_shift_logs
+      WHERE location_id = $1 AND seller_user_id = $2
+      ORDER BY shift_date DESC, id DESC
+      LIMIT $3
+    `,
+    [locationId, sellerUserId, safeLimit]
+  );
+
+  return result.rows;
+}
+
+export async function getReviewQueue(locationId: string) {
+  const db = getPool();
+
+  const result = await db.query(
+    `
+      SELECT
+        id,
+        seller_user_id,
+        seller_name,
+        shift_date,
+        opportunities,
+        memberships_sold,
+        notes,
+        status,
+        created_at
+      FROM mpp_shift_logs
+      WHERE location_id = $1 AND status = 'submitted'
+      ORDER BY shift_date ASC, id ASC
+    `,
+    [locationId]
+  );
+
+  return result.rows;
+}
+
+export async function reviewShiftLog(details: {
+  locationId: string;
+  logId: string;
+  reviewerUserId: string;
+  decision: "verified" | "rejected";
+}) {
+  const db = getPool();
+
+  const result = await db.query(
+    `
+      UPDATE mpp_shift_logs
+      SET
+        status = $4,
+        verified_by = $3,
+        verified_at = NOW(),
+        updated_at = NOW()
+      WHERE id = $1
+        AND location_id = $2
+        AND status = 'submitted'
+      RETURNING
+        id,
+        seller_user_id,
+        seller_name,
+        shift_date,
+        opportunities,
+        memberships_sold,
+        status,
+        verified_by,
+        verified_at
+    `,
+    [details.logId, details.locationId, details.reviewerUserId, details.decision]
+  );
+
+  return result.rows[0] ?? null;
+}
+
+export async function getPerformanceRollup(details: {
+  locationId: string;
+  startDate: string;
+  endDate: string;
+  sellerUserId?: string;
+}) {
+  const db = getPool();
+  const sellerFilter = details.sellerUserId ? "AND seller_user_id = $4" : "";
+  const params = details.sellerUserId
+    ? [details.locationId, details.startDate, details.endDate, details.sellerUserId]
+    : [details.locationId, details.startDate, details.endDate];
+
+  const totalResult = await db.query(
+    `
+      SELECT
+        COUNT(*)::int AS log_count,
+        COALESCE(SUM(opportunities), 0)::int AS opportunities,
+        COALESCE(SUM(memberships_sold), 0)::int AS memberships_sold,
+        COUNT(*) FILTER (WHERE status = 'verified')::int AS verified_count,
+        COUNT(*) FILTER (WHERE status = 'submitted')::int AS pending_count,
+        COUNT(*) FILTER (WHERE status = 'rejected')::int AS rejected_count
+      FROM mpp_shift_logs
+      WHERE location_id = $1
+        AND shift_date >= $2::date
+        AND shift_date < $3::date
+        ${sellerFilter}
+    `,
+    params
+  );
+
+  const sellerResult = await db.query(
+    `
+      SELECT
+        seller_user_id,
+        seller_name,
+        COUNT(*)::int AS log_count,
+        COALESCE(SUM(opportunities), 0)::int AS opportunities,
+        COALESCE(SUM(memberships_sold), 0)::int AS memberships_sold,
+        COUNT(*) FILTER (WHERE status = 'verified')::int AS verified_count,
+        COUNT(*) FILTER (WHERE status = 'submitted')::int AS pending_count
+      FROM mpp_shift_logs
+      WHERE location_id = $1
+        AND shift_date >= $2::date
+        AND shift_date < $3::date
+        ${sellerFilter}
+      GROUP BY seller_user_id, seller_name
+      ORDER BY memberships_sold DESC, opportunities DESC, seller_name ASC
+    `,
+    params
+  );
+
+  return {
+    totals: totalResult.rows[0],
+    sellers: sellerResult.rows,
+  };
 }
