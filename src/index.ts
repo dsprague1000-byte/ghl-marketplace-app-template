@@ -74,7 +74,7 @@ async function getRecordById(activeLocation: string, recordId: string) {
   return recordResp.data?.record ?? null;
 }
 
-async function resolveTrustedAssignment(key: string) {
+function decryptTrustedIdentity(key: string) {
   if (!key) {
     throw Object.assign(new Error("SSO key required"), { statusCode: 400 });
   }
@@ -92,6 +92,12 @@ async function resolveTrustedAssignment(key: string) {
       statusCode: 401,
     });
   }
+
+  return { ssoData, userId, activeLocation };
+}
+
+async function resolveTrustedAssignment(key: string) {
+  const { ssoData, userId, activeLocation } = decryptTrustedIdentity(key);
 
   await ensureLocationToken(activeLocation);
 
@@ -144,13 +150,12 @@ app.post("/decrypt-sso", async (req: Request, res: Response) => {
 
   try {
     return res.send(ghl.decryptSSOData(key));
-  } catch (error) {
+  } catch {
     console.error("[MPP] decrypt-sso failed", { message: "Invalid Key" });
     return res.status(400).send("Invalid Key");
   }
 });
 
-/* OAuth callback receiver retained for Marketplace installation. */
 app.get("/oauth/callback", async (req: Request, res: Response) => {
   const { code } = req.query;
 
@@ -185,7 +190,7 @@ app.get("/oauth/callback", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/oauth/token-status", (req: Request, res: Response) => {
+app.get("/oauth/token-status", (_req: Request, res: Response) => {
   const locationId = "e44pA2hEK8BXwer0eNYB";
   const inst = ghl.model.installationObjects[locationId];
   const allKeys = Object.keys(ghl.model.installationObjects);
@@ -242,10 +247,11 @@ app.post("/assignment-context", async (req: Request, res: Response) => {
   }
 });
 
-/* P020: authorized provisioning of an existing GHL MPP User Assignment record.
-   The caller provides only the target recordId. We read the target record with
-   the caller's Location token, derive target ghl_user_id from GHL, then persist
-   the (locationId, userId) -> recordId index. */
+/* P020: provision an existing GHL MPP User Assignment record.
+   Bootstrap mode: an unindexed viewer may provision only the active record whose
+   GHL User ID exactly matches the trusted SSO userId. This creates a safe first
+   index entry without a privileged seed.
+   Admin mode: an already-indexed GM/RM/Owner may provision another user's record. */
 app.post("/admin/assignment-provision", async (req: Request, res: Response) => {
   try {
     const { key, recordId } = req.body || {};
@@ -253,25 +259,48 @@ app.post("/admin/assignment-provision", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "recordId required" });
     }
 
-    const caller: any = await resolveTrustedAssignment(key);
-    if (!caller.assignmentFound || !isActive(caller.assignment.active)) {
-      return res.status(403).json({ error: "Active MPP assignment required" });
-    }
-    if (!PROVISION_ROLES.has(caller.assignment.mpp_role)) {
-      return res.status(403).json({ error: "Assignment provisioning not permitted" });
-    }
+    const identity = decryptTrustedIdentity(key);
+    await ensureLocationToken(identity.activeLocation);
 
-    const targetRecord = await getRecordById(caller.activeLocation, recordId);
+    const targetRecord = await getRecordById(identity.activeLocation, recordId);
     const targetUserId = targetRecord?.properties?.ghl_user_id;
     if (!targetRecord || !targetUserId) {
       return res.status(400).json({ error: "Target assignment record is invalid" });
     }
+    if (!isActive(targetRecord.properties?.active)) {
+      return res.status(400).json({ error: "Target assignment record is inactive" });
+    }
 
-    await upsertAssignmentIndex(caller.activeLocation, targetUserId, recordId);
+    const existingCallerRecordId = await getAssignmentRecordId(
+      identity.activeLocation,
+      identity.userId
+    );
+
+    let mode: "self" | "admin" = "self";
+
+    if (!existingCallerRecordId) {
+      if (targetUserId !== identity.userId) {
+        return res.status(403).json({
+          error: "Self-provisioning requires your own assignment record",
+        });
+      }
+    } else {
+      const caller: any = await resolveTrustedAssignment(key);
+      if (!caller.assignmentFound || !isActive(caller.assignment.active)) {
+        return res.status(403).json({ error: "Active MPP assignment required" });
+      }
+      if (!PROVISION_ROLES.has(caller.assignment.mpp_role)) {
+        return res.status(403).json({ error: "Assignment provisioning not permitted" });
+      }
+      mode = "admin";
+    }
+
+    await upsertAssignmentIndex(identity.activeLocation, targetUserId, recordId);
 
     return res.json({
       provisioned: true,
-      locationId: caller.activeLocation,
+      mode,
+      locationId: identity.activeLocation,
       recordId,
       assignment: {
         assignment_name: targetRecord.properties?.assignment_name ?? null,
@@ -391,9 +420,7 @@ app.post("/manager/review-shift", async (req: Request, res: Response) => {
   }
 });
 
-/* P024: role-aware monthly rollup. Sellers are self-only; management roles
-   receive the active location rollup. Ownership-group/multi-location scope is
-   intentionally deferred until location scope is proven with real users. */
+/* P024: role-aware monthly rollup. */
 app.post("/performance/rollup", async (req: Request, res: Response) => {
   try {
     const viewer: any = await resolveTrustedAssignment(req.body?.key);
@@ -444,7 +471,7 @@ app.post("/performance/rollup", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/", function (req, res) {
+app.get("/", (_req, res) => {
   res.sendFile(path + "index.html");
 });
 
