@@ -93,6 +93,17 @@ export async function initializePerformanceStore() {
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (location_id, goal_month)
   )`);
+
+  await db.query(`CREATE TABLE IF NOT EXISTS mpp_seller_goals (
+    location_id TEXT NOT NULL,
+    seller_user_id TEXT NOT NULL,
+    goal_month TEXT NOT NULL CHECK (goal_month ~ '^\\d{4}-\\d{2}$'),
+    conversion_target NUMERIC(6,5) NOT NULL CHECK (conversion_target >= 0 AND conversion_target <= 1),
+    set_by_user_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (location_id, seller_user_id, goal_month)
+  )`);
 }
 
 export async function createShiftLog(details: any) {
@@ -163,4 +174,29 @@ export async function getLocationGoal(locationId:string, month:string) {
     set_by_user_id,updated_at FROM mpp_location_goals WHERE location_id=$1 AND goal_month=$2 LIMIT 1`,
     [locationId,month]);
   return result.rows[0] ?? null;
+}
+
+export async function upsertSellerGoal(details:{locationId:string;sellerUserId:string;month:string;conversionTarget:number;setByUserId:string}) {
+  const result=await getPool().query(`INSERT INTO mpp_seller_goals
+    (location_id,seller_user_id,goal_month,conversion_target,set_by_user_id,created_at,updated_at)
+    VALUES ($1,$2,$3,$4,$5,NOW(),NOW())
+    ON CONFLICT (location_id,seller_user_id,goal_month) DO UPDATE SET
+    conversion_target=EXCLUDED.conversion_target,set_by_user_id=EXCLUDED.set_by_user_id,updated_at=NOW()
+    RETURNING seller_user_id,goal_month,conversion_target,set_by_user_id,updated_at`,
+    [details.locationId,details.sellerUserId,details.month,details.conversionTarget,details.setByUserId]);
+  return result.rows[0];
+}
+
+export async function getSellerGoal(locationId:string,sellerUserId:string,month:string) {
+  const result=await getPool().query(`SELECT seller_user_id,goal_month,conversion_target,set_by_user_id,updated_at
+    FROM mpp_seller_goals WHERE location_id=$1 AND seller_user_id=$2 AND goal_month=$3 LIMIT 1`,
+    [locationId,sellerUserId,month]);
+  return result.rows[0] ?? null;
+}
+
+export async function getSellerGoalsForLocation(locationId:string,month:string) {
+  const result=await getPool().query(`SELECT seller_user_id,goal_month,conversion_target,set_by_user_id,updated_at
+    FROM mpp_seller_goals WHERE location_id=$1 AND goal_month=$2 ORDER BY seller_user_id`,
+    [locationId,month]);
+  return result.rows;
 }
