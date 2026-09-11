@@ -19,8 +19,23 @@
 
       <template v-else-if="!assignmentFound">
         <section class="empty-state">
-          <h2>No MPP assignment found</h2>
-          <p>Your HighLevel identity was verified, but no MPP assignment is indexed for this location.</p>
+          <p class="eyebrow">MPP Access</p>
+          <h2>Activate your assignment</h2>
+          <p class="muted">
+            Your HighLevel identity is verified, but this assignment has not been indexed yet. Enter the record ID for your own active MPP User Assignment. MPP will verify that the record belongs to your signed-in HighLevel user before activating access.
+          </p>
+          <form class="form-grid bootstrap-form" @submit.prevent="provisionAssignment">
+            <label class="full-span">
+              MPP User Assignment record ID
+              <input v-model.trim="provisionRecordId" required placeholder="GHL custom object record ID" />
+            </label>
+            <div class="full-span form-actions">
+              <button class="primary-button" type="submit" :disabled="saving">
+                {{ saving ? 'Activating…' : 'Activate MPP access' }}
+              </button>
+              <span v-if="actionMessage" class="action-message">{{ actionMessage }}</span>
+            </div>
+          </form>
         </section>
       </template>
 
@@ -44,22 +59,10 @@
           </nav>
 
           <section v-if="activeView === 'overview'" class="panel-grid">
-            <article class="metric-card">
-              <span>Opportunities</span>
-              <strong>{{ rollup.totals?.opportunities || 0 }}</strong>
-            </article>
-            <article class="metric-card">
-              <span>Memberships Sold</span>
-              <strong>{{ rollup.totals?.memberships_sold || 0 }}</strong>
-            </article>
-            <article class="metric-card">
-              <span>Conversion</span>
-              <strong>{{ percent(rollup.totals?.conversionRate) }}</strong>
-            </article>
-            <article class="metric-card">
-              <span>Pending Review</span>
-              <strong>{{ rollup.totals?.pending_count || 0 }}</strong>
-            </article>
+            <article class="metric-card"><span>Opportunities</span><strong>{{ rollup.totals?.opportunities || 0 }}</strong></article>
+            <article class="metric-card"><span>Memberships Sold</span><strong>{{ rollup.totals?.memberships_sold || 0 }}</strong></article>
+            <article class="metric-card"><span>Conversion</span><strong>{{ percent(rollup.totals?.conversionRate) }}</strong></article>
+            <article class="metric-card"><span>Pending Review</span><strong>{{ rollup.totals?.pending_count || 0 }}</strong></article>
 
             <article class="wide-card">
               <div class="section-heading">
@@ -69,17 +72,8 @@
                 </div>
                 <input v-model="selectedMonth" type="month" @change="loadRollup" />
               </div>
-
               <table v-if="rollup.sellers && rollup.sellers.length" class="data-table">
-                <thead>
-                  <tr>
-                    <th>Seller</th>
-                    <th>Opportunities</th>
-                    <th>Sold</th>
-                    <th>Conversion</th>
-                    <th>Pending</th>
-                  </tr>
-                </thead>
+                <thead><tr><th>Seller</th><th>Opportunities</th><th>Sold</th><th>Conversion</th><th>Pending</th></tr></thead>
                 <tbody>
                   <tr v-for="seller in rollup.sellers" :key="seller.seller_user_id">
                     <td>{{ seller.seller_name }}</td>
@@ -98,26 +92,12 @@
             <p class="eyebrow">Seller Activity</p>
             <h2>Submit Shift Log</h2>
             <form class="form-grid" @submit.prevent="submitShift">
-              <label>
-                Shift date
-                <input v-model="shiftForm.shiftDate" type="date" required />
-              </label>
-              <label>
-                Opportunities
-                <input v-model.number="shiftForm.opportunities" type="number" min="0" step="1" required />
-              </label>
-              <label>
-                Memberships sold
-                <input v-model.number="shiftForm.membershipsSold" type="number" min="0" step="1" required />
-              </label>
-              <label class="full-span">
-                Notes
-                <textarea v-model="shiftForm.notes" rows="4" maxlength="2000" placeholder="Optional context for your manager"></textarea>
-              </label>
+              <label>Shift date<input v-model="shiftForm.shiftDate" type="date" required /></label>
+              <label>Opportunities<input v-model.number="shiftForm.opportunities" type="number" min="0" step="1" required /></label>
+              <label>Memberships sold<input v-model.number="shiftForm.membershipsSold" type="number" min="0" step="1" required /></label>
+              <label class="full-span">Notes<textarea v-model="shiftForm.notes" rows="4" maxlength="2000" placeholder="Optional context for your manager"></textarea></label>
               <div class="full-span form-actions">
-                <button class="primary-button" type="submit" :disabled="saving">
-                  {{ saving ? 'Saving…' : 'Submit shift' }}
-                </button>
+                <button class="primary-button" type="submit" :disabled="saving">{{ saving ? 'Saving…' : 'Submit shift' }}</button>
                 <span v-if="actionMessage" class="action-message">{{ actionMessage }}</span>
               </div>
             </form>
@@ -127,15 +107,7 @@
             <p class="eyebrow">Seller Activity</p>
             <h2>My Recent Shifts</h2>
             <table v-if="shiftLogs.length" class="data-table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Opportunities</th>
-                  <th>Sold</th>
-                  <th>Conversion</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
+              <thead><tr><th>Date</th><th>Opportunities</th><th>Sold</th><th>Conversion</th><th>Status</th></tr></thead>
               <tbody>
                 <tr v-for="log in shiftLogs" :key="log.id">
                   <td>{{ shortDate(log.shift_date) }}</td>
@@ -151,13 +123,9 @@
 
           <section v-if="activeView === 'review'" class="wide-card">
             <div class="section-heading">
-              <div>
-                <p class="eyebrow">Manager Review</p>
-                <h2>Pending Shift Logs</h2>
-              </div>
+              <div><p class="eyebrow">Manager Review</p><h2>Pending Shift Logs</h2></div>
               <button class="secondary-button" @click="loadReviewQueue">Refresh</button>
             </div>
-
             <div v-if="reviewQueue.length" class="review-list">
               <article v-for="log in reviewQueue" :key="log.id" class="review-item">
                 <div>
@@ -178,18 +146,11 @@
           <section v-if="activeView === 'provision'" class="wide-card">
             <p class="eyebrow">MPP Administration</p>
             <h2>Provision User Assignment</h2>
-            <p class="muted">
-              Enter the GHL record ID for an existing MPP User Assignment. MPP will validate the record and index its GHL User ID for this location.
-            </p>
+            <p class="muted">Enter the GHL record ID for an existing MPP User Assignment. MPP will validate the record and index its GHL User ID for this location.</p>
             <form class="form-grid" @submit.prevent="provisionAssignment">
-              <label class="full-span">
-                MPP User Assignment record ID
-                <input v-model.trim="provisionRecordId" required placeholder="GHL custom object record ID" />
-              </label>
+              <label class="full-span">MPP User Assignment record ID<input v-model.trim="provisionRecordId" required placeholder="GHL custom object record ID" /></label>
               <div class="full-span form-actions">
-                <button class="primary-button" type="submit" :disabled="saving">
-                  {{ saving ? 'Provisioning…' : 'Provision assignment' }}
-                </button>
+                <button class="primary-button" type="submit" :disabled="saving">{{ saving ? 'Provisioning…' : 'Provision assignment' }}</button>
                 <span v-if="actionMessage" class="action-message">{{ actionMessage }}</span>
               </div>
             </form>
@@ -229,32 +190,16 @@ export default {
     }
   },
   computed: {
-    assignmentFound() {
-      return !!this.assignment?.assignmentFound
-    },
-    role() {
-      return this.assignment?.assignment?.mpp_role || ''
-    },
-    roleLabel() {
-      return this.role ? this.role.replaceAll('_', ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Unassigned'
-    },
-    isActive() {
-      return String(this.assignment?.assignment?.active || '').toLowerCase() === 'yes'
-    },
-    currentMonth() {
-      return this.selectedMonth
-    },
+    assignmentFound() { return !!this.assignment?.assignmentFound },
+    role() { return this.assignment?.assignment?.mpp_role || '' },
+    roleLabel() { return this.role ? this.role.replaceAll('_', ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Unassigned' },
+    isActive() { return String(this.assignment?.assignment?.active || '').toLowerCase() === 'yes' },
+    currentMonth() { return this.selectedMonth },
     navItems() {
       const items = [{ key: 'overview', label: 'Overview' }]
-      if (this.capabilities.includes('submit_shift')) {
-        items.push({ key: 'submit', label: 'Submit Shift' }, { key: 'history', label: 'My History' })
-      }
-      if (this.capabilities.includes('review_logs')) {
-        items.push({ key: 'review', label: 'Review Queue' })
-      }
-      if (this.capabilities.includes('provision_assignments')) {
-        items.push({ key: 'provision', label: 'Provision Users' })
-      }
+      if (this.capabilities.includes('submit_shift')) items.push({ key: 'submit', label: 'Submit Shift' }, { key: 'history', label: 'My History' })
+      if (this.capabilities.includes('review_logs')) items.push({ key: 'review', label: 'Review Queue' })
+      if (this.capabilities.includes('provision_assignments')) items.push({ key: 'provision', label: 'Provision Users' })
       return items
     }
   },
@@ -267,16 +212,7 @@ export default {
         body: JSON.stringify({ key: this.ssoKey })
       })
       this.context = await ctxRes.json()
-
-      const assignment = await this.api('/assignment-context', {})
-      this.assignment = assignment
-      this.capabilities = assignment.capabilities || []
-
-      if (assignment.assignmentFound && String(assignment.assignment?.active || '').toLowerCase() === 'yes') {
-        await this.loadRollup()
-        if (this.capabilities.includes('submit_shift')) await this.loadShiftLogs()
-        if (this.capabilities.includes('review_logs')) await this.loadReviewQueue()
-      }
+      await this.reloadAssignment()
     } catch (error) {
       console.error('MPP workspace failed', error)
       this.error = error.message || 'Unable to load MPP workspace.'
@@ -309,12 +245,19 @@ export default {
       if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`)
       return data
     },
-    async loadRollup() {
-      try {
-        this.rollup = await this.api('/performance/rollup', { month: this.selectedMonth })
-      } catch (error) {
-        this.actionMessage = error.message
+    async reloadAssignment() {
+      const assignment = await this.api('/assignment-context', {})
+      this.assignment = assignment
+      this.capabilities = assignment.capabilities || []
+      if (assignment.assignmentFound && String(assignment.assignment?.active || '').toLowerCase() === 'yes') {
+        await this.loadRollup()
+        if (this.capabilities.includes('submit_shift')) await this.loadShiftLogs()
+        if (this.capabilities.includes('review_logs')) await this.loadReviewQueue()
       }
+    },
+    async loadRollup() {
+      try { this.rollup = await this.api('/performance/rollup', { month: this.selectedMonth }) }
+      catch (error) { this.actionMessage = error.message }
     },
     async loadShiftLogs() {
       const data = await this.api('/seller/shift-logs')
@@ -334,55 +277,42 @@ export default {
         this.shiftForm.membershipsSold = 0
         this.shiftForm.notes = ''
         await Promise.all([this.loadShiftLogs(), this.loadRollup()])
-      } catch (error) {
-        this.actionMessage = error.message
-      } finally {
-        this.saving = false
-      }
+      } catch (error) { this.actionMessage = error.message }
+      finally { this.saving = false }
     },
     async reviewLog(logId, decision) {
       this.actionMessage = ''
       try {
         await this.api('/manager/review-shift', { logId, decision })
         await Promise.all([this.loadReviewQueue(), this.loadRollup()])
-      } catch (error) {
-        this.actionMessage = error.message
-      }
+      } catch (error) { this.actionMessage = error.message }
     },
     async provisionAssignment() {
       this.saving = true
       this.actionMessage = ''
+      const wasUnassigned = !this.assignmentFound
       try {
         const result = await this.api('/admin/assignment-provision', { recordId: this.provisionRecordId })
-        this.actionMessage = `Provisioned ${result.assignment.assignment_name || result.assignment.ghl_user_id}.`
+        this.actionMessage = result.mode === 'self'
+          ? `MPP access activated for ${result.assignment.assignment_name || result.assignment.ghl_user_id}.`
+          : `Provisioned ${result.assignment.assignment_name || result.assignment.ghl_user_id}.`
         this.provisionRecordId = ''
-      } catch (error) {
-        this.actionMessage = error.message
-      } finally {
-        this.saving = false
-      }
+        if (wasUnassigned) await this.reloadAssignment()
+      } catch (error) { this.actionMessage = error.message }
+      finally { this.saving = false }
     },
     rate(sold, opportunities) {
       const o = Number(opportunities || 0)
       return o > 0 ? Number(sold || 0) / o : 0
     },
-    percent(value) {
-      return `${(Number(value || 0) * 100).toFixed(1)}%`
-    },
-    shortDate(value) {
-      if (!value) return '—'
-      return String(value).slice(0, 10)
-    }
+    percent(value) { return `${(Number(value || 0) * 100).toFixed(1)}%` },
+    shortDate(value) { return value ? String(value).slice(0, 10) : '—' }
   }
 }
 </script>
 
 <style>
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  color: #172033;
-  background: #eef2f6;
-}
+:root { font-family: Inter, Avenir, Helvetica, Arial, sans-serif; color: #172033; background: #eef2f6; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #eef2f6; }
 button, input, textarea { font: inherit; }
@@ -400,6 +330,7 @@ h2 { margin: 0; font-size: 20px; }
 .mini-pill { padding: 4px 8px; background: #eef2f6; }
 .message, .empty-state, .wide-card, .metric-card { background: white; border: 1px solid #dfe5ec; border-radius: 14px; }
 .message, .empty-state { padding: 24px; }
+.bootstrap-form { max-width: 720px; }
 .error { color: #b42318; }
 .nav-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
 .nav-button, .secondary-button { border: 1px solid #ccd5df; background: white; border-radius: 9px; padding: 9px 13px; cursor: pointer; font-weight: 700; color: #344054; }
