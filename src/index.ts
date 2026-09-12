@@ -332,7 +332,7 @@ app.post("/reports/weekly/save", async (req, res) => {
     };
     const existing = await findWeeklyReport(viewer.activeLocation, weekStart);
     if (existing?.id) {
-      await ghl.requests(viewer.activeLocation).put(`/objects/${LPR_OBJECT}/records/${existing.id}`, { locationId: viewer.activeLocation, properties }, { headers: { Version: "v3" } });
+      await ghl.requests(viewer.activeLocation).put(`/objects/${LPR_OBJECT}/records/${existing.id}?locationId=${encodeURIComponent(viewer.activeLocation)}`, { properties }, { headers: { Version: "v3" } });
     } else {
       await ghl.requests(viewer.activeLocation).post(`/objects/${LPR_OBJECT}/records`, { locationId: viewer.activeLocation, properties }, { headers: { Version: "v3" } });
     }
