@@ -211,6 +211,7 @@ export class GHL {
         userType: resp.data.userType ?? null,
         response_keys: Object.keys(resp.data),
         stored_key: resp.data.locationId || resp.data.companyId || null,
+        scope: resp.data.scope ?? null,
       }));
     } catch (error: any) {
       if (error?.response) {
