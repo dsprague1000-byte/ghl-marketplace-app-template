@@ -14,7 +14,24 @@ export class GHL {
   }
 
   async initialize() {
-    return this.model.initialize();
+    const hydratedCount = await this.model.initialize();
+
+    // Company OAuth grants are authoritative for permissions. Location grants are derived from the
+    // Company token, so re-derive persisted Location tokens after hydration to prevent stale scopes
+    // surviving a Company reauthorization (P027A exposed this when record.write was added).
+    const companyInstallations = Object.entries(this.model.installationObjects)
+      .filter(([, installation]) => installation.userType === "Company");
+    const locationIds = Object.entries(this.model.installationObjects)
+      .filter(([, installation]) => installation.userType === "Location")
+      .map(([resourceId]) => resourceId);
+
+    for (const [companyId] of companyInstallations) {
+      for (const locationId of locationIds) {
+        await this.getLocationTokenFromCompanyToken(companyId, locationId);
+      }
+    }
+
+    return hydratedCount;
   }
 
 /**
@@ -131,6 +148,13 @@ export class GHL {
       }
     );
     await this.model.saveInstallationInfo(res.data);
+    console.log('[P027A-location-token] rederived:', JSON.stringify({
+      locationId: res.data.locationId ?? locationId,
+      companyId: res.data.companyId ?? companyId,
+      userType: res.data.userType ?? null,
+      expires_in: res.data.expires_in ?? null,
+      scope: res.data.scope ?? null,
+    }));
   }
 
   private async refreshAccessToken(resourceId: string) {
