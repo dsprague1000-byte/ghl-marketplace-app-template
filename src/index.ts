@@ -64,6 +64,13 @@ function moneyValue(value: any) {
   if (value && typeof value === "object") return Number(value.value ?? 0);
   return Number(value ?? 0);
 }
+function weeklyReportSource(record: any) {
+  const source = String(record?.createdBy?.source ?? "").toUpperCase();
+  const channel = String(record?.createdBy?.channel ?? "").toUpperCase();
+  if (source === "INTEGRATION" || channel === "OAUTH") return "MPP";
+  if (source === "FORM") return "Form";
+  return "Other";
+}
 
 async function ensureLocationToken(activeLocation: string) {
   if (ghl.checkInstallationExists(activeLocation)) return;
@@ -244,6 +251,58 @@ app.post("/reports/weekly", async (req, res) => {
     const weekStart = String(req.body?.weekStart ?? ""); if (!validDate(weekStart)) return res.status(400).json({ error: "Valid weekStart required" });
     return res.json(await buildWeeklyWorkspace(viewer, weekStart));
   } catch (error: any) { return sendSafeError(res, error, "weekly_report_failed"); }
+});
+
+/* P027B: chronological GHL report ledger with live MPP reconciliation. */
+app.post("/reports/history", async (req, res) => {
+  try {
+    const viewer: any = await resolveTrustedAssignment(req.body?.key);
+    if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !WEEKLY_REPORT_WRITE_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Report history requires General Manager role" });
+    const response = await ghl.requests(viewer.activeLocation).post(`/objects/${LPR_OBJECT}/records/search`, {
+      locationId: viewer.activeLocation,
+      page: 1,
+      pageLimit: 20,
+      sort: [{ field: "properties.week_start", direction: "desc" }],
+    }, { headers: { Version: "v3" } });
+    const records = response.data?.records ?? [];
+    const reports = await Promise.all(records.map(async (record: any) => {
+      const p = record.properties ?? {};
+      const weekStart = String(p.week_start ?? p.report_label ?? "").slice(0, 10);
+      const weekEnd = String(p.week_end ?? "").slice(0, 10) || (validDate(weekStart) ? addDays(weekStart, 6) : "");
+      const reportedSold = Number(p.total_memberships_sold ?? 0);
+      let mppSold = 0;
+      let difference: number | null = null;
+      let status: "matched" | "mismatch" | "saved" = "saved";
+      if (validDate(weekStart)) {
+        const verified = await getVerifiedPerformanceWindow(viewer.activeLocation, weekStart, addDays(weekStart, 7));
+        const opportunities = Number(verified.totals?.opportunities ?? 0);
+        mppSold = Number(verified.totals?.memberships_sold ?? 0);
+        if (opportunities > 0 || mppSold > 0) {
+          difference = reportedSold - mppSold;
+          status = difference === 0 ? "matched" : "mismatch";
+        }
+      }
+      return {
+        recordId: record.id,
+        reportLabel: p.report_label ?? null,
+        weekStart,
+        weekEnd,
+        reportedSold,
+        mppSold,
+        difference,
+        status,
+        totalRetailWashesSold: Number(p.total_retail_washes_sold ?? 0),
+        retailRevenue: moneyValue(p.retail_revenue),
+        membershipRevenue: moneyValue(p.membership_revenue),
+        membershipCancellations: Number(p.membership_cancellations ?? 0),
+        notes: String(p.notes ?? ""),
+        source: weeklyReportSource(record),
+        createdAt: record.createdAt ?? null,
+        updatedAt: record.updatedAt ?? null,
+      };
+    }));
+    return res.json({ total: Number(response.data?.total ?? reports.length), reports });
+  } catch (error: any) { return sendSafeError(res, error, "report_history_failed"); }
 });
 
 app.post("/reports/weekly/save", async (req, res) => {
