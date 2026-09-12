@@ -35,6 +35,7 @@ const PROVISION_ROLES = new Set(["general_manager", "regional_manager", "owner"]
 const LOCATION_GOAL_WRITE_ROLES = new Set(["general_manager", "regional_manager", "owner"]);
 const SELLER_GOAL_WRITE_ROLES = new Set(["sales_manager"]);
 const SELLER_GOAL_READ_ALL_ROLES = new Set(["sales_manager", "general_manager", "regional_manager", "owner"]);
+const WEEKLY_REPORT_READ_ROLES = new Set(["sales_manager", "general_manager", "regional_manager", "owner"]);
 const WEEKLY_REPORT_WRITE_ROLES = new Set(["general_manager"]);
 
 function isActive(value: unknown) { return String(value ?? "").trim().toLowerCase() === "yes"; }
@@ -189,7 +190,7 @@ app.post("/assignment-context", async (req, res) => {
     if (!viewer.assignmentFound) return res.json({ trustedUserId: viewer.userId, activeLocation: viewer.activeLocation, tokenVerified: true, assignmentFound: false, assignment: null, capabilities: [] });
     const role = viewer.assignment.mpp_role;
     const active = isActive(viewer.assignment.active);
-    const capabilities = active ? ["view_shell", ...(role === "seller" ? ["submit_shift", "view_self"] : []), ...(MANAGER_ROLES.has(role) ? ["view_location", "review_logs"] : []), ...(PROVISION_ROLES.has(role) ? ["provision_assignments"] : []), ...(LOCATION_GOAL_WRITE_ROLES.has(role) ? ["manage_location_goal"] : []), ...(SELLER_GOAL_WRITE_ROLES.has(role) ? ["manage_seller_goals"] : []), ...(WEEKLY_REPORT_WRITE_ROLES.has(role) ? ["manage_weekly_report"] : [])] : [];
+    const capabilities = active ? ["view_shell", ...(role === "seller" ? ["submit_shift", "view_self"] : []), ...(MANAGER_ROLES.has(role) ? ["view_location", "review_logs"] : []), ...(PROVISION_ROLES.has(role) ? ["provision_assignments"] : []), ...(LOCATION_GOAL_WRITE_ROLES.has(role) ? ["manage_location_goal"] : []), ...(SELLER_GOAL_WRITE_ROLES.has(role) ? ["manage_seller_goals"] : []), ...(WEEKLY_REPORT_READ_ROLES.has(role) ? ["view_weekly_report"] : []), ...(WEEKLY_REPORT_WRITE_ROLES.has(role) ? ["manage_weekly_report"] : [])] : [];
     return res.json({ trustedUserId: viewer.userId, activeLocation: viewer.activeLocation, tokenVerified: true, assignmentFound: true, assignment: viewer.assignment, capabilities });
   } catch (error: any) { return sendSafeError(res, error, "assignment_lookup_failed"); }
 });
@@ -247,7 +248,7 @@ app.post("/goals/seller", async (req, res) => { try { const viewer: any = await 
 app.post("/reports/weekly", async (req, res) => {
   try {
     const viewer: any = await resolveTrustedAssignment(req.body?.key);
-    if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !WEEKLY_REPORT_WRITE_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Weekly report access requires General Manager role" });
+    if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !WEEKLY_REPORT_READ_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Weekly report access requires manager role" });
     const weekStart = String(req.body?.weekStart ?? ""); if (!validDate(weekStart)) return res.status(400).json({ error: "Valid weekStart required" });
     return res.json(await buildWeeklyWorkspace(viewer, weekStart));
   } catch (error: any) { return sendSafeError(res, error, "weekly_report_failed"); }
@@ -257,7 +258,7 @@ app.post("/reports/weekly", async (req, res) => {
 app.post("/reports/history", async (req, res) => {
   try {
     const viewer: any = await resolveTrustedAssignment(req.body?.key);
-    if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !WEEKLY_REPORT_WRITE_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Report history requires General Manager role" });
+    if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !WEEKLY_REPORT_READ_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Report history requires manager role" });
     const response = await ghl.requests(viewer.activeLocation).post(`/objects/${LPR_OBJECT}/records/search`, {
       locationId: viewer.activeLocation,
       page: 1,
