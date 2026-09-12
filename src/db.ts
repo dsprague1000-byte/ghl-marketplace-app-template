@@ -4,7 +4,6 @@ let pool: any = null;
 
 function getPool() {
   if (pool) return pool;
-
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error("DATABASE_URL is required");
   pool = new Pool({ connectionString });
@@ -155,6 +154,22 @@ export async function getPerformanceRollup(details:any) {
     COUNT(*) FILTER (WHERE status='submitted')::int AS pending_count FROM mpp_shift_logs
     WHERE location_id=$1 AND shift_date >= $2::date AND shift_date < $3::date ${sellerFilter}
     GROUP BY seller_user_id,seller_name ORDER BY memberships_sold DESC,opportunities DESC,seller_name ASC`,params);
+  return {totals:totalResult.rows[0],sellers:sellerResult.rows};
+}
+
+export async function getVerifiedPerformanceWindow(locationId:string,startDate:string,endDateExclusive:string) {
+  const totalResult=await getPool().query(`SELECT COUNT(*)::int AS log_count,
+    COALESCE(SUM(opportunities),0)::int AS opportunities,
+    COALESCE(SUM(memberships_sold),0)::int AS memberships_sold
+    FROM mpp_shift_logs WHERE location_id=$1 AND status='verified'
+    AND shift_date >= $2::date AND shift_date < $3::date`,[locationId,startDate,endDateExclusive]);
+  const sellerResult=await getPool().query(`SELECT seller_user_id,seller_name,
+    COALESCE(SUM(opportunities),0)::int AS opportunities,
+    COALESCE(SUM(memberships_sold),0)::int AS memberships_sold
+    FROM mpp_shift_logs WHERE location_id=$1 AND status='verified'
+    AND shift_date >= $2::date AND shift_date < $3::date
+    GROUP BY seller_user_id,seller_name ORDER BY memberships_sold DESC,opportunities DESC,seller_name ASC`,
+    [locationId,startDate,endDateExclusive]);
   return {totals:totalResult.rows[0],sellers:sellerResult.rows};
 }
 
