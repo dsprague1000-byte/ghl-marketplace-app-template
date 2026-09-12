@@ -83,8 +83,8 @@ async function findWeeklyReport(locationId: string, weekStart: string) {
     locationId,
     page: 1,
     pageLimit: 20,
-  });
-  const records = response.data?.customObjectRecords ?? [];
+  }, { headers: { Version: "v3" } });
+  const records = response.data?.records ?? [];
   return records.find((record: any) =>
     String(record.properties?.report_label ?? "").slice(0, 10) === weekStart ||
     String(record.properties?.week_start ?? "").slice(0, 10) === weekStart
