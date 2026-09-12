@@ -82,8 +82,6 @@ async function findWeeklyReport(locationId: string, weekStart: string) {
   const response = await ghl.requests(locationId).post(`/objects/${LPR_OBJECT}/records/search`, {
     locationId,
     pageLimit: 20,
-    query: weekStart,
-    searchAfter: [],
   }, { headers: { Version: "v3" } });
   const records = response.data?.customObjectRecords ?? [];
   return records.find((record: any) =>
