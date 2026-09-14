@@ -25,6 +25,7 @@ import {
   initializeScopeGrantStore,
   upsertScopeGrant,
 } from "./scope-grants";
+import { initializeTrainingStore, registerTrainingRoutes } from "./training";
 
 const path = __dirname + "/ui/dist/";
 dotenv.config();
@@ -202,6 +203,8 @@ async function buildWeeklyWorkspace(viewer: any, weekStart: string) {
     reconciliation: report ? { mppSold: membershipsSold, reportedSold: report.totalMembershipsSold, difference, matches: difference === 0 } : null,
   };
 }
+
+registerTrainingRoutes(app, { resolveTrustedAssignment, isActive, managerRoles: MANAGER_ROLES });
 
 app.get("/authorize-handler", async (req, res) => { await ghl.authorizationHandler(req.query.code as string); res.redirect("https://app.gohighlevel.com/"); });
 app.post("/decrypt-sso", async (req, res) => { try { return res.send(ghl.decryptSSOData(req.body?.key)); } catch { return res.status(400).send("Invalid Key"); } });
@@ -392,6 +395,7 @@ async function start() {
     const assignmentIndexCount = await initializeAssignmentIndex();
     await initializePerformanceStore();
     const scopeGrantCount = await initializeScopeGrantStore();
+    const trainingStatusCount = await initializeTrainingStore();
     console.log("[P019A] OAuth store ready", { hydratedCount });
     console.log("[P019B] Assignment index ready", { assignmentIndexCount });
     console.log("[P026A] Location goals ready");
@@ -399,6 +403,7 @@ async function start() {
     console.log("[P027A] Weekly report integration ready");
     console.log("[P028C] Scope grants ready", { scopeGrantCount });
     console.log("[P028D] Read-context switching ready");
+    console.log("[TRAINING-P01] Training status bridge ready", { trainingStatusCount });
     app.listen(port, () => console.log(`GHL app listening on port ${port}`));
   } catch (error: any) { console.error("[MPP] startup failed", { message: error?.message ?? "unknown" }); process.exit(1); }
 }
