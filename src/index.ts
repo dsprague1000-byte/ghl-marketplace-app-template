@@ -19,6 +19,12 @@ import {
   upsertLocationGoal,
   upsertSellerGoal,
 } from "./db";
+import {
+  getLocationScopeGrants,
+  hasLocationScopeGrant,
+  initializeScopeGrantStore,
+  upsertScopeGrant,
+} from "./scope-grants";
 
 const path = __dirname + "/ui/dist/";
 dotenv.config();
@@ -142,6 +148,16 @@ async function resolveTrustedAssignment(key: string) {
   }};
 }
 
+async function resolveAuthorizedLocation(viewer: any, requestedLocationId?: unknown) {
+  if (!viewer.assignmentFound || !isActive(viewer.assignment.active)) throw Object.assign(new Error("Active MPP assignment required"), { statusCode: 403 });
+  const requested = String(requestedLocationId ?? viewer.activeLocation ?? "").trim();
+  if (!requested) throw Object.assign(new Error("Location scope required"), { statusCode: 400 });
+  const granted = await hasLocationScopeGrant(viewer.userId, requested);
+  if (!granted) throw Object.assign(new Error("Requested location is outside your MPP scope"), { statusCode: 403 });
+  await ensureLocationToken(requested);
+  return requested;
+}
+
 function sendSafeError(res: Response, error: any, fallback = "request_failed") {
   const status = error?.statusCode ?? 500;
   console.error("[MPP] request error", { status, message: error?.message ?? "unknown" });
@@ -187,11 +203,12 @@ app.get("/oauth/token-status", (_req, res) => { const locationId = "e44pA2hEK8BX
 app.post("/assignment-context", async (req, res) => {
   try {
     const viewer: any = await resolveTrustedAssignment(req.body?.key);
-    if (!viewer.assignmentFound) return res.json({ trustedUserId: viewer.userId, activeLocation: viewer.activeLocation, tokenVerified: true, assignmentFound: false, assignment: null, capabilities: [] });
+    if (!viewer.assignmentFound) return res.json({ trustedUserId: viewer.userId, activeLocation: viewer.activeLocation, tokenVerified: true, assignmentFound: false, assignment: null, capabilities: [], scopeLocations: [] });
     const role = viewer.assignment.mpp_role;
     const active = isActive(viewer.assignment.active);
     const capabilities = active ? ["view_shell", ...(role === "seller" ? ["submit_shift", "view_self"] : []), ...(MANAGER_ROLES.has(role) ? ["view_location", "review_logs"] : []), ...(PROVISION_ROLES.has(role) ? ["provision_assignments"] : []), ...(LOCATION_GOAL_WRITE_ROLES.has(role) ? ["manage_location_goal"] : []), ...(SELLER_GOAL_WRITE_ROLES.has(role) ? ["manage_seller_goals"] : []), ...(WEEKLY_REPORT_READ_ROLES.has(role) ? ["view_weekly_report"] : []), ...(WEEKLY_REPORT_WRITE_ROLES.has(role) ? ["manage_weekly_report"] : [])] : [];
-    return res.json({ trustedUserId: viewer.userId, activeLocation: viewer.activeLocation, tokenVerified: true, assignmentFound: true, assignment: viewer.assignment, capabilities });
+    const scopeLocations = active ? (await getLocationScopeGrants(viewer.userId)).map((grant:any) => grant.scope_id) : [];
+    return res.json({ trustedUserId: viewer.userId, activeLocation: viewer.activeLocation, tokenVerified: true, assignmentFound: true, assignment: viewer.assignment, capabilities, scopeLocations });
   } catch (error: any) { return sendSafeError(res, error, "assignment_lookup_failed"); }
 });
 
@@ -207,8 +224,25 @@ app.post("/admin/assignment-provision", async (req, res) => {
     if (!existing) { if (targetUserId !== identity.userId) return res.status(403).json({ error: "Self-provisioning requires your own assignment record" }); }
     else { const caller: any = await resolveTrustedAssignment(key); if (!caller.assignmentFound || !isActive(caller.assignment.active)) return res.status(403).json({ error: "Active MPP assignment required" }); if (!PROVISION_ROLES.has(caller.assignment.mpp_role)) return res.status(403).json({ error: "Assignment provisioning not permitted" }); mode = "admin"; }
     await upsertAssignmentIndex(identity.activeLocation, targetUserId, recordId);
+    await upsertScopeGrant({ ghlUserId: targetUserId, assignmentRecordId: recordId, scopeId: identity.activeLocation });
     return res.json({ provisioned: true, mode, locationId: identity.activeLocation, recordId, assignment: { assignment_name: targetRecord.properties?.assignment_name ?? null, ghl_user_id: targetUserId, mpp_role: normalizeRole(targetRecord.properties?.mpp_role), scope_type: targetRecord.properties?.scope_type ?? null, active: targetRecord.properties?.active ?? null } });
   } catch (error: any) { return sendSafeError(res, error, "assignment_provision_failed"); }
+});
+
+app.post("/admin/scope-grant", async (req, res) => {
+  try {
+    const viewer:any = await resolveTrustedAssignment(req.body?.key);
+    if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !PROVISION_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Scope grant management not permitted" });
+    const recordId = String(req.body?.recordId ?? "").trim();
+    const scopeId = String(req.body?.scopeId ?? "").trim();
+    if (!recordId || !scopeId) return res.status(400).json({ error: "recordId and scopeId required" });
+    const targetRecord = await getRecordById(viewer.activeLocation, recordId);
+    const targetUserId = String(targetRecord?.properties?.ghl_user_id ?? "").trim();
+    if (!targetRecord || !targetUserId || !isActive(targetRecord.properties?.active)) return res.status(400).json({ error: "Target assignment must be active in the host location" });
+    await ensureLocationToken(scopeId);
+    const grant = await upsertScopeGrant({ ghlUserId: targetUserId, assignmentRecordId: recordId, scopeId });
+    return res.json({ granted: true, grant });
+  } catch (error:any) { return sendSafeError(res,error,"scope_grant_failed"); }
 });
 
 app.post("/seller/shift-log", async (req, res) => {
@@ -244,23 +278,24 @@ app.post("/goals/location/set", async (req, res) => { try { const viewer: any = 
 app.post("/goals/seller/set", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !SELLER_GOAL_WRITE_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Seller goal management not permitted" }); const sellerUserId = String(req.body?.sellerUserId ?? ""), month = String(req.body?.month ?? ""), conversionTarget = Number(req.body?.conversionTarget); if (!sellerUserId || !validMonth(month) || !Number.isFinite(conversionTarget) || conversionTarget < 0 || conversionTarget > 1) return res.status(400).json({ error: "Valid seller, month, and conversion target required" }); const targetRecordId = await getAssignmentRecordId(viewer.activeLocation, sellerUserId); if (!targetRecordId) return res.status(400).json({ error: "Seller assignment is not indexed for this location" }); const targetRecord = await getRecordById(viewer.activeLocation, targetRecordId); if (!targetRecord || targetRecord.properties?.ghl_user_id !== sellerUserId || normalizeRole(targetRecord.properties?.mpp_role) !== "seller" || !isActive(targetRecord.properties?.active)) return res.status(400).json({ error: "Target must be an active Seller assignment in this location" }); const goal = await upsertSellerGoal({ locationId: viewer.activeLocation, sellerUserId, month, conversionTarget, setByUserId: viewer.userId }); return res.json({ saved: true, goal: { seller_user_id: goal.seller_user_id, goal_month: goal.goal_month, conversion_target: goal.conversion_target } }); } catch (error: any) { return sendSafeError(res, error, "seller_goal_save_failed"); } });
 app.post("/goals/seller", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active)) return res.status(403).json({ error: "Active MPP assignment required" }); const month = validMonth(req.body?.month) ? String(req.body.month) : new Date().toISOString().slice(0, 7); if (viewer.assignment.mpp_role === "seller") { const goal = await getSellerGoal(viewer.activeLocation, viewer.userId, month); return res.json({ month, goals: goal ? [goal] : [] }); } if (!SELLER_GOAL_READ_ALL_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Seller goal view not permitted" }); const requestedSeller = String(req.body?.sellerUserId ?? "").trim(); if (requestedSeller) { const goal = await getSellerGoal(viewer.activeLocation, requestedSeller, month); return res.json({ month, goals: goal ? [goal] : [] }); } return res.json({ month, goals: await getSellerGoalsForLocation(viewer.activeLocation, month) }); } catch (error: any) { return sendSafeError(res, error, "seller_goal_failed"); } });
 
-/* P027A: GM weekly report workspace backed by the existing GHL Location Performance Report object. */
 app.post("/reports/weekly", async (req, res) => {
   try {
     const viewer: any = await resolveTrustedAssignment(req.body?.key);
     if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !WEEKLY_REPORT_READ_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Weekly report access requires manager role" });
+    const selectedLocation = await resolveAuthorizedLocation(viewer, req.body?.selectedScopeLocation);
+    const scopedViewer = { ...viewer, activeLocation: selectedLocation, hostLocation: viewer.activeLocation };
     const weekStart = String(req.body?.weekStart ?? ""); if (!validDate(weekStart)) return res.status(400).json({ error: "Valid weekStart required" });
-    return res.json(await buildWeeklyWorkspace(viewer, weekStart));
+    return res.json(await buildWeeklyWorkspace(scopedViewer, weekStart));
   } catch (error: any) { return sendSafeError(res, error, "weekly_report_failed"); }
 });
 
-/* P027B: chronological GHL report ledger with live MPP reconciliation. */
 app.post("/reports/history", async (req, res) => {
   try {
     const viewer: any = await resolveTrustedAssignment(req.body?.key);
     if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !WEEKLY_REPORT_READ_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Report history requires manager role" });
-    const response = await ghl.requests(viewer.activeLocation).post(`/objects/${LPR_OBJECT}/records/search`, {
-      locationId: viewer.activeLocation,
+    const selectedLocation = await resolveAuthorizedLocation(viewer, req.body?.selectedScopeLocation);
+    const response = await ghl.requests(selectedLocation).post(`/objects/${LPR_OBJECT}/records/search`, {
+      locationId: selectedLocation,
       page: 1,
       pageLimit: 20,
       sort: [{ field: "properties.week_start", direction: "desc" }],
@@ -275,7 +310,7 @@ app.post("/reports/history", async (req, res) => {
       let difference: number | null = null;
       let status: "matched" | "mismatch" | "saved" = "saved";
       if (validDate(weekStart)) {
-        const verified = await getVerifiedPerformanceWindow(viewer.activeLocation, weekStart, addDays(weekStart, 7));
+        const verified = await getVerifiedPerformanceWindow(selectedLocation, weekStart, addDays(weekStart, 7));
         const opportunities = Number(verified.totals?.opportunities ?? 0);
         mppSold = Number(verified.totals?.memberships_sold ?? 0);
         if (opportunities > 0 || mppSold > 0) {
@@ -302,7 +337,7 @@ app.post("/reports/history", async (req, res) => {
         updatedAt: record.updatedAt ?? null,
       };
     }));
-    return res.json({ total: Number(response.data?.total ?? reports.length), reports });
+    return res.json({ selectedScopeLocation: selectedLocation, total: Number(response.data?.total ?? reports.length), reports });
   } catch (error: any) { return sendSafeError(res, error, "report_history_failed"); }
 });
 
@@ -344,8 +379,16 @@ app.post("/reports/weekly/save", async (req, res) => {
 app.get("/", (_req, res) => res.sendFile(path + "index.html"));
 async function start() {
   try {
-    const hydratedCount = await ghl.initialize(); const assignmentIndexCount = await initializeAssignmentIndex(); await initializePerformanceStore();
-    console.log("[P019A] OAuth store ready", { hydratedCount }); console.log("[P019B] Assignment index ready", { assignmentIndexCount }); console.log("[P026A] Location goals ready"); console.log("[P026B] Seller goals ready"); console.log("[P027A] Weekly report integration ready");
+    const hydratedCount = await ghl.initialize();
+    const assignmentIndexCount = await initializeAssignmentIndex();
+    await initializePerformanceStore();
+    const scopeGrantCount = await initializeScopeGrantStore();
+    console.log("[P019A] OAuth store ready", { hydratedCount });
+    console.log("[P019B] Assignment index ready", { assignmentIndexCount });
+    console.log("[P026A] Location goals ready");
+    console.log("[P026B] Seller goals ready");
+    console.log("[P027A] Weekly report integration ready");
+    console.log("[P028C] Scope grants ready", { scopeGrantCount });
     app.listen(port, () => console.log(`GHL app listening on port ${port}`));
   } catch (error: any) { console.error("[MPP] startup failed", { message: error?.message ?? "unknown" }); process.exit(1); }
 }
