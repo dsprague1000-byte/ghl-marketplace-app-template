@@ -43,6 +43,10 @@ const SELLER_GOAL_WRITE_ROLES = new Set(["sales_manager"]);
 const SELLER_GOAL_READ_ALL_ROLES = new Set(["sales_manager", "general_manager", "regional_manager", "owner"]);
 const WEEKLY_REPORT_READ_ROLES = new Set(["sales_manager", "general_manager", "regional_manager", "owner"]);
 const WEEKLY_REPORT_WRITE_ROLES = new Set(["general_manager"]);
+const LOCATION_LABELS: Record<string,string> = {
+  "e44pA2hEK8BXwer0eNYB": "MPP — Master Spoke Template",
+  "aGn7Uf2qec6eTb9M6k1K": "MPP — TEST — Scope Spoke 02",
+};
 
 function isActive(value: unknown) { return String(value ?? "").trim().toLowerCase() === "yes"; }
 function normalizeRole(value: unknown) { return String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_"); }
@@ -77,6 +81,9 @@ function weeklyReportSource(record: any) {
   if (source === "INTEGRATION" || channel === "OAUTH") return "MPP";
   if (source === "FORM") return "Form";
   return "Other";
+}
+function scopeLocationMeta(locationId:string) {
+  return { locationId, name: LOCATION_LABELS[locationId] ?? locationId };
 }
 
 async function ensureLocationToken(activeLocation: string) {
@@ -186,6 +193,7 @@ async function buildWeeklyWorkspace(viewer: any, weekStart: string) {
   const report = serializeWeeklyReport(existingRecord);
   const difference = report ? report.totalMembershipsSold - membershipsSold : null;
   return {
+    selectedScopeLocation: viewer.activeLocation,
     weekStart,
     weekEnd,
     derived: { opportunities, membershipsSold, conversionRate: opportunities > 0 ? membershipsSold / opportunities : 0, sellers },
@@ -207,7 +215,7 @@ app.post("/assignment-context", async (req, res) => {
     const role = viewer.assignment.mpp_role;
     const active = isActive(viewer.assignment.active);
     const capabilities = active ? ["view_shell", ...(role === "seller" ? ["submit_shift", "view_self"] : []), ...(MANAGER_ROLES.has(role) ? ["view_location", "review_logs"] : []), ...(PROVISION_ROLES.has(role) ? ["provision_assignments"] : []), ...(LOCATION_GOAL_WRITE_ROLES.has(role) ? ["manage_location_goal"] : []), ...(SELLER_GOAL_WRITE_ROLES.has(role) ? ["manage_seller_goals"] : []), ...(WEEKLY_REPORT_READ_ROLES.has(role) ? ["view_weekly_report"] : []), ...(WEEKLY_REPORT_WRITE_ROLES.has(role) ? ["manage_weekly_report"] : [])] : [];
-    const scopeLocations = active ? (await getLocationScopeGrants(viewer.userId)).map((grant:any) => grant.scope_id) : [];
+    const scopeLocations = active ? (await getLocationScopeGrants(viewer.userId)).map((grant:any) => scopeLocationMeta(grant.scope_id)) : [];
     return res.json({ trustedUserId: viewer.userId, activeLocation: viewer.activeLocation, tokenVerified: true, assignmentFound: true, assignment: viewer.assignment, capabilities, scopeLocations });
   } catch (error: any) { return sendSafeError(res, error, "assignment_lookup_failed"); }
 });
@@ -256,24 +264,25 @@ app.post("/seller/shift-log", async (req, res) => {
   } catch (error: any) { return sendSafeError(res, error); }
 });
 app.post("/seller/shift-logs", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active)) return res.status(403).json({ error: "Active MPP assignment required" }); return res.json({ logs: await getSellerShiftLogs(viewer.activeLocation, viewer.userId, 30) }); } catch (error: any) { return sendSafeError(res, error); } });
-app.post("/manager/review-queue", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !MANAGER_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Manager role required" }); return res.json({ logs: await getReviewQueue(viewer.activeLocation) }); } catch (error: any) { return sendSafeError(res, error); } });
+app.post("/manager/review-queue", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !MANAGER_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Manager role required" }); const selectedLocation = await resolveAuthorizedLocation(viewer, req.body?.selectedScopeLocation); return res.json({ selectedScopeLocation: selectedLocation, logs: await getReviewQueue(selectedLocation) }); } catch (error: any) { return sendSafeError(res, error); } });
 app.post("/manager/review-shift", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !MANAGER_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Manager role required" }); if (!req.body?.logId || !["verified", "rejected"].includes(req.body?.decision)) return res.status(400).json({ error: "Valid logId and decision required" }); const log = await reviewShiftLog({ locationId: viewer.activeLocation, logId: String(req.body.logId), reviewerUserId: viewer.userId, decision: req.body.decision }); return log ? res.json({ reviewed: true, log }) : res.status(409).json({ error: "Shift log is not pending or was not found" }); } catch (error: any) { return sendSafeError(res, error); } });
 
 app.post("/performance/rollup", async (req, res) => {
   try {
     const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active)) return res.status(403).json({ error: "Active MPP assignment required" });
+    const selectedLocation = await resolveAuthorizedLocation(viewer, req.body?.selectedScopeLocation);
     const month = validMonth(req.body?.month) ? String(req.body.month) : new Date().toISOString().slice(0, 7); const { startDate, endDate } = monthBounds(month); const sellerUserId = viewer.assignment.mpp_role === "seller" ? viewer.userId : undefined;
     if (!sellerUserId && !MANAGER_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Performance view not permitted" });
-    const rollup = await getPerformanceRollup({ locationId: viewer.activeLocation, startDate, endDate, sellerUserId });
-    const goals = sellerUserId ? [await getSellerGoal(viewer.activeLocation, sellerUserId, month)].filter(Boolean) : await getSellerGoalsForLocation(viewer.activeLocation, month);
+    const rollup = await getPerformanceRollup({ locationId: selectedLocation, startDate, endDate, sellerUserId });
+    const goals = sellerUserId ? [await getSellerGoal(selectedLocation, sellerUserId, month)].filter(Boolean) : await getSellerGoalsForLocation(selectedLocation, month);
     const goalsBySeller = new Map(goals.map((goal: any) => [goal.seller_user_id, Number(goal.conversion_target)])); const opportunities = Number(rollup.totals?.opportunities ?? 0), membershipsSold = Number(rollup.totals?.memberships_sold ?? 0);
     const sellers = rollup.sellers.map((seller: any) => { const conversionRate = Number(seller.opportunities) > 0 ? Number(seller.memberships_sold) / Number(seller.opportunities) : 0; const conversionGoal = goalsBySeller.has(seller.seller_user_id) ? goalsBySeller.get(seller.seller_user_id) : null; return { ...seller, conversionRate, conversionGoal, conversionVariance: conversionGoal === null ? null : conversionRate - Number(conversionGoal) }; });
     const selfGoal = sellerUserId && goals.length ? Number((goals[0] as any).conversion_target) : null, selfActual = opportunities > 0 ? membershipsSold / opportunities : 0;
-    return res.json({ month, scope: sellerUserId ? "self" : "location", totals: { ...rollup.totals, conversionRate: selfActual }, sellers, sellerGoal: sellerUserId ? { conversionGoal: selfGoal, conversionVariance: selfGoal === null ? null : selfActual - selfGoal } : null });
+    return res.json({ selectedScopeLocation: selectedLocation, month, scope: sellerUserId ? "self" : "location", totals: { ...rollup.totals, conversionRate: selfActual }, sellers, sellerGoal: sellerUserId ? { conversionGoal: selfGoal, conversionVariance: selfGoal === null ? null : selfActual - selfGoal } : null });
   } catch (error: any) { return sendSafeError(res, error); }
 });
 
-app.post("/goals/location", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active)) return res.status(403).json({ error: "Active MPP assignment required" }); const month = validMonth(req.body?.month) ? String(req.body.month) : new Date().toISOString().slice(0, 7); const goal = await getLocationGoal(viewer.activeLocation, month); const { startDate, endDate } = monthBounds(month); const performance = await getPerformanceRollup({ locationId: viewer.activeLocation, startDate, endDate }); const actual = Number(performance.totals?.memberships_sold ?? 0); return res.json({ month, goal, pace: goal ? pacing(month, Number(goal.memberships_target), actual) : null }); } catch (error: any) { return sendSafeError(res, error, "location_goal_failed"); } });
+app.post("/goals/location", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active)) return res.status(403).json({ error: "Active MPP assignment required" }); const selectedLocation = await resolveAuthorizedLocation(viewer, req.body?.selectedScopeLocation); const month = validMonth(req.body?.month) ? String(req.body.month) : new Date().toISOString().slice(0, 7); const goal = await getLocationGoal(selectedLocation, month); const { startDate, endDate } = monthBounds(month); const performance = await getPerformanceRollup({ locationId: selectedLocation, startDate, endDate }); const actual = Number(performance.totals?.memberships_sold ?? 0); return res.json({ selectedScopeLocation: selectedLocation, month, goal, pace: goal ? pacing(month, Number(goal.memberships_target), actual) : null }); } catch (error: any) { return sendSafeError(res, error, "location_goal_failed"); } });
 app.post("/goals/location/set", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !LOCATION_GOAL_WRITE_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Location goal management not permitted" }); const month = String(req.body?.month ?? ""), membershipsTarget = Number(req.body?.membershipsTarget), conversionTarget = Number(req.body?.conversionTarget); if (!validMonth(month) || !Number.isInteger(membershipsTarget) || membershipsTarget < 0 || !Number.isFinite(conversionTarget) || conversionTarget < 0 || conversionTarget > 1) return res.status(400).json({ error: "Valid month, memberships target, and conversion target required" }); const goal = await upsertLocationGoal({ locationId: viewer.activeLocation, month, membershipsTarget, conversionTarget, setByUserId: viewer.userId }); return res.json({ saved: true, goal }); } catch (error: any) { return sendSafeError(res, error, "location_goal_save_failed"); } });
 app.post("/goals/seller/set", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !SELLER_GOAL_WRITE_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Seller goal management not permitted" }); const sellerUserId = String(req.body?.sellerUserId ?? ""), month = String(req.body?.month ?? ""), conversionTarget = Number(req.body?.conversionTarget); if (!sellerUserId || !validMonth(month) || !Number.isFinite(conversionTarget) || conversionTarget < 0 || conversionTarget > 1) return res.status(400).json({ error: "Valid seller, month, and conversion target required" }); const targetRecordId = await getAssignmentRecordId(viewer.activeLocation, sellerUserId); if (!targetRecordId) return res.status(400).json({ error: "Seller assignment is not indexed for this location" }); const targetRecord = await getRecordById(viewer.activeLocation, targetRecordId); if (!targetRecord || targetRecord.properties?.ghl_user_id !== sellerUserId || normalizeRole(targetRecord.properties?.mpp_role) !== "seller" || !isActive(targetRecord.properties?.active)) return res.status(400).json({ error: "Target must be an active Seller assignment in this location" }); const goal = await upsertSellerGoal({ locationId: viewer.activeLocation, sellerUserId, month, conversionTarget, setByUserId: viewer.userId }); return res.json({ saved: true, goal: { seller_user_id: goal.seller_user_id, goal_month: goal.goal_month, conversion_target: goal.conversion_target } }); } catch (error: any) { return sendSafeError(res, error, "seller_goal_save_failed"); } });
 app.post("/goals/seller", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active)) return res.status(403).json({ error: "Active MPP assignment required" }); const month = validMonth(req.body?.month) ? String(req.body.month) : new Date().toISOString().slice(0, 7); if (viewer.assignment.mpp_role === "seller") { const goal = await getSellerGoal(viewer.activeLocation, viewer.userId, month); return res.json({ month, goals: goal ? [goal] : [] }); } if (!SELLER_GOAL_READ_ALL_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Seller goal view not permitted" }); const requestedSeller = String(req.body?.sellerUserId ?? "").trim(); if (requestedSeller) { const goal = await getSellerGoal(viewer.activeLocation, requestedSeller, month); return res.json({ month, goals: goal ? [goal] : [] }); } return res.json({ month, goals: await getSellerGoalsForLocation(viewer.activeLocation, month) }); } catch (error: any) { return sendSafeError(res, error, "seller_goal_failed"); } });
@@ -389,6 +398,7 @@ async function start() {
     console.log("[P026B] Seller goals ready");
     console.log("[P027A] Weekly report integration ready");
     console.log("[P028C] Scope grants ready", { scopeGrantCount });
+    console.log("[P028D] Read-context switching ready");
     app.listen(port, () => console.log(`GHL app listening on port ${port}`));
   } catch (error: any) { console.error("[MPP] startup failed", { message: error?.message ?? "unknown" }); process.exit(1); }
 }
