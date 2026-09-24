@@ -195,7 +195,7 @@ export class GHL {
           grant_type: "authorization_code",
           code,
           user_type: "Location",
-          redirect_uri: "https://mpp-auth-context-probe.onrender.com/oauth/callback",
+          redirect_uri: process.env.GHL_OAUTH_REDIRECT_URI,
         }),
         { headers: { "content-type": "application/x-www-form-urlencoded" } }
       );
