@@ -1,10 +1,15 @@
 import express, { Express, Response } from "express";
 import dotenv from "dotenv";
+import { createHash } from "node:crypto";
 import { GHL } from "./ghl";
 import { json } from "body-parser";
 import {
+  claimOAuthCallback,
+  completeOAuthCallback,
   createShiftLog,
+  failOAuthCallback,
   getAssignmentRecordId,
+  getOAuthCallbackReceipt,
   getLocationGoal,
   getPerformanceRollup,
   getReviewQueue,
@@ -204,11 +209,100 @@ async function buildWeeklyWorkspace(viewer: any, weekStart: string) {
   };
 }
 
+
+async function verifyBoundedObjectRead(locationId: string) {
+  const response = await ghl.requests(locationId).post(
+    "/objects/custom_objects.mpp_user_assignment/records/search",
+    { locationId, page: 1, pageLimit: 1 },
+    { headers: { Version: "v3" } }
+  );
+  return {
+    http_status: response.status,
+    locationId,
+    total: Number(response.data?.total ?? 0),
+    record_count: Array.isArray(response.data?.records) ? response.data.records.length : 0,
+  };
+}
+
+async function waitForOAuthReceipt(codeHash: string) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const receipt = await getOAuthCallbackReceipt(codeHash);
+    if (!receipt || receipt.status !== "pending") return receipt;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return getOAuthCallbackReceipt(codeHash);
+}
+
+async function bootstrapConfiguredLocation() {
+  const targetLocationId = String(process.env.GHL_BOOTSTRAP_LOCATION_ID ?? "").trim();
+  if (!targetLocationId) return null;
+  if (!ghl.checkInstallationExists(targetLocationId)) {
+    const company = Object.entries(ghl.model.installationObjects)
+      .find(([, installation]) => installation.userType === "Company");
+    if (!company) {
+      console.log("[V1A-00-bootstrap] awaiting Company grant", { locationId: targetLocationId });
+      return null;
+    }
+    await ghl.getLocationTokenFromCompanyToken(company[0], targetLocationId);
+  }
+  const proof = await verifyBoundedObjectRead(targetLocationId);
+  console.log("[V1A-00-read-proof]", proof);
+  return proof;
+}
+
 registerTrainingRoutes(app, { resolveTrustedAssignment, isActive, managerRoles: MANAGER_ROLES });
 
 app.get("/authorize-handler", async (req, res) => { await ghl.authorizationHandler(req.query.code as string); res.redirect("https://app.gohighlevel.com/"); });
 app.post("/decrypt-sso", async (req, res) => { try { return res.send(ghl.decryptSSOData(req.body?.key)); } catch { return res.status(400).send("Invalid Key"); } });
-app.get("/oauth/callback", async (req, res) => { if (!req.query.code) return res.status(200).send("MPP OAuth Callback Received"); try { await ghl.authorizationHandler(req.query.code as string); return res.status(200).send("MPP OAuth Installation Complete"); } catch (error: any) { console.error("[MPP] OAuth callback failed", { message: error?.message ?? "unknown" }); return res.status(500).send("MPP OAuth token exchange/storage failed"); } });
+app.get("/oauth/callback", async (req, res) => {
+  const code = String(req.query.code ?? "");
+  if (!code) return res.status(200).send("MPP OAuth Callback Received");
+  const codeHash = createHash("sha256").update(code).digest("hex");
+  const claim = await claimOAuthCallback(codeHash);
+
+  if (!claim.claimed) {
+    if (claim.status === "complete") return res.status(200).send("MPP OAuth Installation Already Complete");
+    if (claim.status === "failed") return res.status(500).send("MPP OAuth Installation Previously Failed");
+    const receipt = await waitForOAuthReceipt(codeHash);
+    if (receipt?.status === "complete") return res.status(200).send("MPP OAuth Installation Already Complete");
+    if (receipt?.status === "failed") return res.status(500).send("MPP OAuth Installation Previously Failed");
+    return res.status(202).send("MPP OAuth Installation Processing");
+  }
+
+  try {
+    const installation: any = await ghl.authorizationHandler(code);
+    const targetLocationId = String(process.env.GHL_BOOTSTRAP_LOCATION_ID ?? "").trim();
+    let locationId = installation.locationId ?? null;
+    const companyId = installation.companyId ?? null;
+
+    if (installation.userType === "Company") {
+      if (!companyId || !targetLocationId) throw new Error("Company grant requires configured bootstrap Location");
+      await ghl.getLocationTokenFromCompanyToken(companyId, targetLocationId);
+      locationId = targetLocationId;
+    }
+    if (targetLocationId && locationId !== targetLocationId) {
+      throw new Error("OAuth installation resolved an unexpected Location");
+    }
+
+    const proof = await verifyBoundedObjectRead(locationId);
+    await completeOAuthCallback(codeHash, companyId, locationId);
+    console.log("[V1A-00-oauth] installation complete", {
+      companyId,
+      locationId,
+      userType: installation.userType ?? null,
+      read_http_status: proof.http_status,
+      read_total: proof.total,
+    });
+    return res.status(200).send("MPP OAuth Installation Complete");
+  } catch (error: any) {
+    await failOAuthCallback(codeHash, "oauth_bootstrap_failed");
+    console.error("[MPP] OAuth callback failed", {
+      status: error?.response?.status ?? null,
+      message: error?.message ?? "unknown",
+    });
+    return res.status(500).send("MPP OAuth token exchange/storage failed");
+  }
+});
 app.get("/oauth/token-status", (_req, res) => { const locationId = "e44pA2hEK8BXwer0eNYB"; const inst = ghl.model.installationObjects[locationId]; const keys = Object.keys(ghl.model.installationObjects); res.json({ tokenAvailable: ghl.checkInstallationExists(locationId), locationId: inst?.locationId ?? null, companyId: inst?.companyId ?? null, userType: inst?.userType ?? null, expires_in: inst?.expires_in ?? null, refreshTokenPresent: !!ghl.model.getRefreshToken(locationId), installationObjectsKeys: keys, storedKey: keys[0] ?? null }); });
 
 app.post("/assignment-context", async (req, res) => {
@@ -392,6 +486,14 @@ app.get("/", (_req, res) => res.sendFile(path + "index.html"));
 async function start() {
   try {
     const hydratedCount = await ghl.initialize();
+    try {
+      await bootstrapConfiguredLocation();
+    } catch (error: any) {
+      console.error("[V1A-00-bootstrap] deferred", {
+        status: error?.response?.status ?? null,
+        message: error?.message ?? "unknown",
+      });
+    }
     const assignmentIndexCount = await initializeAssignmentIndex();
     await initializePerformanceStore();
     const scopeGrantCount = await initializeScopeGrantStore();
