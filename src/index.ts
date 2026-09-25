@@ -687,6 +687,7 @@ app.post("/reports/weekly/save", async (req, res) => {
 
 registerLocationPerformanceRoutes(app, { resolveTrustedAssignment, resolveAuthorizedLocation, isActive });
 
+app.get("/health/version", (_req, res) => res.json({ service: "mpp-v1-staging", commit: process.env.RENDER_GIT_COMMIT ?? null, locationPerformance: "v1b" }));
 app.get("/", (_req, res) => res.sendFile(path + "index.html"));
 async function start() {
   try {
