@@ -378,6 +378,83 @@ export async function reviewShiftLog(details:any) {
   finally { client.release(); }
 }
 
+export async function runV1AReviewIntegrityProof(details:any) {
+  const proofId=String(details.proofId);
+  const unauthorizedTeamId=`v1a-unauthorized-${proofId}`;
+  let crossLog:any=null;
+  let replayLog:any=null;
+  let proof:any=null;
+  try {
+    crossLog=await createShiftLog({locationId:details.locationId,sellerUserId:`synthetic-cross-${proofId}`,
+      sellerName:"V1A Synthetic Unauthorized Seller",assignmentRecordId:`synthetic-${proofId}`,
+      teamRecordId:unauthorizedTeamId,teamName:"V1A Synthetic Unauthorized Team",
+      shiftDate:details.shiftDate,opportunities:2,membershipsSold:1,notes:"Synthetic AC7/AC16 fixture"});
+    const crossBefore=await getPool().query(`SELECT review_status,review_version,team_record_id,
+      opportunities,memberships_sold FROM mpp_shift_logs WHERE id=$1`,[crossLog.id]);
+    const eventsBefore=await getPool().query(`SELECT COUNT(*)::int AS count FROM mpp_review_events
+      WHERE activity_report_id=$1`,[crossLog.id]);
+    const unauthorizedDetail=await getShiftLogForReview(details.locationId,details.managedTeamId,String(crossLog.id));
+    const unauthorizedMutation=await reviewShiftLog({locationId:details.locationId,
+      managedTeamId:details.managedTeamId,logId:String(crossLog.id),
+      reviewerUserId:details.reviewerUserId,reviewerName:details.reviewerName,
+      decision:"Verified",managerNote:"",expectedVersion:0,
+      actionId:`ac16-${proofId}`,correlationId:`ac16-${proofId}`});
+    const crossAfter=await getPool().query(`SELECT review_status,review_version,team_record_id,
+      opportunities,memberships_sold FROM mpp_shift_logs WHERE id=$1`,[crossLog.id]);
+    const eventsAfter=await getPool().query(`SELECT COUNT(*)::int AS count FROM mpp_review_events
+      WHERE activity_report_id=$1`,[crossLog.id]);
+
+    replayLog=await createShiftLog({locationId:details.locationId,sellerUserId:`synthetic-replay-${proofId}`,
+      sellerName:"V1A Synthetic Replay Seller",assignmentRecordId:`synthetic-${proofId}`,
+      teamRecordId:details.managedTeamId,teamName:details.managedTeamName,
+      shiftDate:details.shiftDate,opportunities:4,membershipsSold:1,notes:"Synthetic AC17 fixture"});
+    const replayActionId=`ac17-${proofId}`;
+    const first=await reviewShiftLog({locationId:details.locationId,managedTeamId:details.managedTeamId,
+      logId:String(replayLog.id),reviewerUserId:details.reviewerUserId,reviewerName:details.reviewerName,
+      decision:"Verified",managerNote:"",expectedVersion:0,actionId:replayActionId,
+      correlationId:replayActionId});
+    const firstCount=await getPool().query(`SELECT COUNT(*)::int AS count FROM mpp_review_events
+      WHERE activity_report_id=$1 AND action_id=$2`,[replayLog.id,replayActionId]);
+    const second=await reviewShiftLog({locationId:details.locationId,managedTeamId:details.managedTeamId,
+      logId:String(replayLog.id),reviewerUserId:details.reviewerUserId,reviewerName:details.reviewerName,
+      decision:"Verified",managerNote:"",expectedVersion:0,actionId:replayActionId,
+      correlationId:replayActionId});
+    const secondCount=await getPool().query(`SELECT COUNT(*)::int AS count FROM mpp_review_events
+      WHERE activity_report_id=$1 AND action_id=$2`,[replayLog.id,replayActionId]);
+
+    const before=crossBefore.rows[0];
+    const after=crossAfter.rows[0];
+    const unchanged=JSON.stringify(before)===JSON.stringify(after);
+    proof={
+      proofId,
+      ac7:{pass:unauthorizedDetail===null,unauthorizedDetailResolved:false,
+        managedTeamId:details.managedTeamId,reportTeamId:unauthorizedTeamId},
+      ac16:{pass:unauthorizedMutation===null&&unchanged&&eventsAfter.rows[0].count===eventsBefore.rows[0].count,
+        mutationResult:"not_found",before,after,eventCountBefore:eventsBefore.rows[0].count,
+        eventCountAfter:eventsAfter.rows[0].count},
+      ac17:{pass:first.idempotent===false&&second.idempotent===true&&
+          Number(first.log.review_version)===1&&Number(second.log.review_version)===1&&
+          firstCount.rows[0].count===1&&secondCount.rows[0].count===1,
+        actionId:replayActionId,first:{idempotent:first.idempotent,status:first.log.review_status,
+          version:Number(first.log.review_version),eventCount:firstCount.rows[0].count},
+        replay:{idempotent:second.idempotent,status:second.log.review_status,
+          version:Number(second.log.review_version),eventCount:secondCount.rows[0].count}}
+    };
+  } finally {
+    const ids=[crossLog?.id,replayLog?.id].filter(Boolean);
+    if (ids.length) {
+      await getPool().query(`DELETE FROM mpp_review_events WHERE activity_report_id = ANY($1::bigint[])`,[ids]);
+      await getPool().query(`DELETE FROM mpp_shift_logs WHERE id = ANY($1::bigint[])`,[ids]);
+    }
+  }
+  const residue=await getPool().query(`SELECT
+    (SELECT COUNT(*)::int FROM mpp_shift_logs WHERE seller_user_id LIKE $1) AS log_count,
+    (SELECT COUNT(*)::int FROM mpp_review_events WHERE action_id LIKE $2) AS event_count`,
+    [`synthetic-%-${proofId}`,`ac%-${proofId}`]);
+  proof.cleanup={pass:residue.rows[0].log_count===0&&residue.rows[0].event_count===0,...residue.rows[0]};
+  return proof;
+}
+
 export async function getPerformanceRollup(details:any) {
   const sellerFilter=details.sellerUserId ? "AND seller_user_id = $4" : "";
   const params=details.sellerUserId ? [details.locationId,details.startDate,details.endDate,details.sellerUserId]
