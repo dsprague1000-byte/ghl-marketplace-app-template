@@ -1,6 +1,6 @@
 const { Pool } = require("pg");
 import { createHash, randomUUID } from "node:crypto";
-import { addUtcDays, deriveLocationMetrics, LOCATION_FORMULA_VERSION, summarizeAverage } from "./location-performance";
+import { addUtcDays, deriveLocationMetrics, LOCATION_FORMULA_VERSION, parseCanonicalReportInput, summarizeAverage, validateGoal } from "./location-performance";
 
 let pool:any=null;
 function db(){ if(pool)return pool; const cs=process.env.DATABASE_URL; if(!cs)throw new Error("DATABASE_URL is required"); pool=new Pool({connectionString:cs}); return pool; }
@@ -85,3 +85,79 @@ export async function setAverageSetting(d:any){const c=await db().connect(),ph=h
 export async function setLocationGoalV1(d:any){const c=await db().connect(),ph=hash({type:d.goalType,value:d.value,currency:d.currency,effectiveFrom:d.effectiveFrom});try{await c.query("BEGIN");const prior=await c.query("SELECT * FROM mpp_location_goals_v1 WHERE location_id=$1 AND goal_type=$2 AND effective_from=$3 FOR UPDATE",[d.locationId,d.goalType,d.effectiveFrom]);const p=prior.rows[0];if(p&&p.last_action_id===d.actionId){await c.query("COMMIT");return {...p,goal_value:Number(p.goal_value),idempotent:true};}const version=p?Number(p.goal_version)+1:1;if(p&&Number(p.goal_version)!==d.expectedVersion)throw Object.assign(new Error("Goal changed since it was loaded"),{statusCode:409});const id=p?.goal_id??randomUUID();const row=await c.query(`INSERT INTO mpp_location_goals_v1(goal_id,location_id,goal_type,effective_from,goal_value,currency,goal_version,last_action_id,set_by_ghl_user_id,set_by_name) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(location_id,goal_type,effective_from) DO UPDATE SET goal_value=EXCLUDED.goal_value,currency=EXCLUDED.currency,goal_version=EXCLUDED.goal_version,last_action_id=EXCLUDED.last_action_id,set_by_ghl_user_id=EXCLUDED.set_by_ghl_user_id,set_by_name=EXCLUDED.set_by_name,set_at=NOW() RETURNING *`,[id,d.locationId,d.goalType,d.effectiveFrom,d.value,d.currency,version,d.actionId,d.actorId,d.actorName]);await c.query(`INSERT INTO mpp_location_goal_events(event_id,goal_id,location_id,actor_ghl_user_id,actor_name,before_snapshot,after_snapshot,expected_version,resulting_version,action_id,payload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,[randomUUID(),id,d.locationId,d.actorId,d.actorName,p?JSON.stringify(p):null,JSON.stringify(row.rows[0]),d.expectedVersion??null,version,d.actionId,ph]);await c.query("COMMIT");return {...row.rows[0],goal_value:Number(row.rows[0].goal_value),idempotent:false};}catch(e){await c.query("ROLLBACK");throw e;}finally{c.release();}}
 export async function getEffectiveGoals(locationId:string,weekStart:string){const r=await db().query(`SELECT DISTINCT ON(goal_type) * FROM mpp_location_goals_v1 WHERE location_id=$1 AND effective_from<=$2 ORDER BY goal_type,effective_from DESC`,[locationId,weekStart]);return r.rows.map((x:any)=>({...x,goal_value:Number(x.goal_value),goal_version:Number(x.goal_version)}));}
 export async function getLocationSummary(locationId:string,reportId?:string){let current:any;if(reportId)current=await getLocationReport(locationId,reportId);else{const r=await db().query("SELECT * FROM mpp_location_performance_reports WHERE location_id=$1 ORDER BY week_start_date DESC LIMIT 1",[locationId]);current=safeRow(r.rows[0]);}if(!current)return null;const setting=await getAverageSetting(locationId);const pri=await db().query("SELECT * FROM mpp_location_performance_reports WHERE location_id=$1 AND week_start_date<$2 ORDER BY week_start_date DESC LIMIT $3",[locationId,current.week_start_date,setting.reportCount]);const average=summarizeAverage(current,pri.rows.map(safeRow),setting.reportCount);return {report:current,metrics:deriveLocationMetrics(current),average,averageSetting:setting,goals:await getEffectiveGoals(locationId,String(current.week_start_date).slice(0,10))};}
+
+
+export async function runV1BIntegrityProof(locationId:string,scopeDenied:boolean){
+ const prefix="v1b01-proof-",actorId="v1b01-proof-actor",actorName="V1B-01 Staging Proof",sourceType="MPP_STAGING_V1B_PROOF";
+ const c=await db().connect();
+ try{
+  await c.query("BEGIN");
+  await c.query("DELETE FROM mpp_location_report_events WHERE location_id=$1 AND action_id LIKE $2",[locationId,prefix+"%"]);
+  await c.query("DELETE FROM mpp_location_performance_reports WHERE location_id=$1 AND source_type=$2",[locationId,sourceType]);
+  await c.query("DELETE FROM mpp_location_goal_events WHERE location_id=$1 AND action_id LIKE $2",[locationId,prefix+"%"]);
+  await c.query("DELETE FROM mpp_location_goals_v1 WHERE location_id=$1 AND last_action_id LIKE $2",[locationId,prefix+"%"]);
+  await c.query("DELETE FROM mpp_location_average_setting_events WHERE location_id=$1 AND action_id LIKE $2",[locationId,prefix+"%"]);
+  await c.query("DELETE FROM mpp_location_average_settings WHERE location_id=$1 AND last_action_id LIKE $2",[locationId,prefix+"%"]);
+  await c.query("DELETE FROM mpp_legacy_lpr_quarantine WHERE location_id=$1 AND legacy_record_id LIKE $2",[locationId,prefix+"%"]);
+  await c.query("COMMIT");
+ }catch(e){await c.query("ROLLBACK");throw e;}finally{c.release();}
+ const base=(weekStart:string,index:number,over:any={})=>({weekStart,timezoneSnapshot:"America/New_York",beginningActiveMemberships:1000+index*10,endingActiveMemberships:1008+index*10,newMembershipSales:20+index,retailLaneCars:100+index*5,cancellationsDuringPeriod:5+index,grossLocationRevenueMinor:1000000+index*25000,currency:"USD",notes:"Synthetic V1B-01 staging proof fixture",sourceType,sourceReference:prefix+weekStart,...over});
+ const weeks=["2026-06-29","2026-07-06","2026-07-13","2026-07-20","2026-07-27","2026-08-03","2026-08-10","2026-08-17","2026-08-24"];
+ const rows:any[]=[];
+ for(let i=0;i<weeks.length;i++){
+  const input=base(weeks[i],i,i===1?{beginningActiveMemberships:0}:i===2?{retailLaneCars:0}:{});
+  const saved=await submitLocationReport({locationId,actorId,actorName,input,actionId:prefix+"submit-"+i});
+  rows.push(saved.report);
+ }
+ const replay=await submitLocationReport({locationId,actorId,actorName,input:base(weeks[0],0),actionId:prefix+"submit-0"});
+ let changedDuplicateDenied=false;try{await submitLocationReport({locationId,actorId,actorName,input:base(weeks[0],0,{newMembershipSales:99}),actionId:prefix+"changed-duplicate"});}catch(e:any){changedDuplicateDenied=e?.statusCode===409;}
+ const current=rows[8],correctedInput=base(weeks[8],8,{newMembershipSales:40,endingActiveMemberships:1111});
+ const corrected=await correctLocationReport({locationId,actorId,actorName,input:correctedInput,reportId:current.report_id,reason:"Correct verified source transcription",expectedVersion:1,actionId:prefix+"correct-8"});
+ const correctionReplay=await correctLocationReport({locationId,actorId,actorName,input:correctedInput,reportId:current.report_id,reason:"Correct verified source transcription",expectedVersion:1,actionId:prefix+"correct-8"});
+ let staleDenied=false;try{await correctLocationReport({locationId,actorId,actorName,input:correctedInput,reportId:current.report_id,reason:"Stale attempt",expectedVersion:1,actionId:prefix+"stale"});}catch(e:any){staleDenied=e?.statusCode===409;}
+ const prefill=await getPrefill(locationId,"2026-08-31");
+ await setAverageSetting({locationId,actorId,actorName,reportCount:8,expectedVersion:0,actionId:prefix+"avg-8"});
+ const summary=await getLocationSummary(locationId,current.report_id);
+ const partial= summarizeAverage(rows[2],[rows[1],rows[0]],8);
+ const goalTypes=["membership_conversion_rate","new_membership_sales","active_memberships","gross_location_revenue","weekly_churn_rate"];
+ for(let i=0;i<goalTypes.length;i++)await setLocationGoalV1({locationId,actorId,actorName,goalType:goalTypes[i],value:i===0?0.15:i===4?0.03:i===3?1500000:1200+i,currency:i===3?"USD":null,effectiveFrom:"2026-06-29",expectedVersion:null,actionId:prefix+"goal-"+i});
+ let retailGoalDenied=false;try{validateGoal("retail_lane_cars",100);}catch(e:any){retailGoalDenied=e?.statusCode===400;}
+ const history=await getLocationReportHistory(locationId,1,20),detail=await getLocationReport(locationId,current.report_id),events=await getReportEvents(locationId,current.report_id);
+ const validationSamples:any[]=[
+  {...base("2026-06-30",0)}, {...base("2026-09-07",0),currency:"US"}, {...base("2026-09-07",0),newMembershipSales:-1}, {...base("2026-09-07",0),retailLaneCars:null}
+ ];
+ const validationDenied=validationSamples.every(x=>{try{parseCanonicalReportInput(x);return false;}catch{return true;}});
+ const z1=deriveLocationMetrics(rows[1]),z2=deriveLocationMetrics(rows[2]),positive=deriveLocationMetrics(corrected.report);
+ const qc=await db().connect();let rollbackAbsent=false,quarantineCount=0,eventCount=0,rowCount=0,goalCount=0;
+ try{
+  await qc.query("BEGIN");
+  const rollbackId=randomUUID();
+  await qc.query(`INSERT INTO mpp_location_performance_reports(report_id,location_id,week_start_date,week_end_date,timezone_snapshot,beginning_active_memberships,ending_active_memberships,new_membership_sales,retail_lane_cars,cancellations_during_period,gross_location_revenue_minor,currency,notes,source_type,submitted_by_ghl_user_id,submitted_by_name,formula_version,last_action_id) VALUES($1,$2,'2026-09-07','2026-09-13','America/New_York',1,1,0,0,0,0,'USD','rollback rehearsal',$3,$4,$5,$6,$7)`,[rollbackId,locationId,sourceType,actorId,actorName,LOCATION_FORMULA_VERSION,prefix+"rollback"]);
+  await qc.query("ROLLBACK");
+  rollbackAbsent=(await qc.query("SELECT 1 FROM mpp_location_performance_reports WHERE location_id=$1 AND last_action_id=$2",[locationId,prefix+"rollback"])).rowCount===0;
+  await qc.query(`INSERT INTO mpp_legacy_lpr_quarantine(quarantine_id,location_id,legacy_record_id,reason,raw_snapshot) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,[randomUUID(),locationId,prefix+"ambiguous-1","Retail washes and split revenue are not canonically equivalent",JSON.stringify({total_retail_washes_sold:123,retail_revenue:100,membership_revenue:50})]);
+  quarantineCount=Number((await qc.query("SELECT COUNT(*) c FROM mpp_legacy_lpr_quarantine WHERE location_id=$1 AND legacy_record_id LIKE $2",[locationId,prefix+"%"])).rows[0].c);
+  rowCount=Number((await qc.query("SELECT COUNT(*) c FROM mpp_location_performance_reports WHERE location_id=$1 AND source_type=$2",[locationId,sourceType])).rows[0].c);
+  eventCount=Number((await qc.query("SELECT COUNT(*) c FROM mpp_location_report_events WHERE location_id=$1 AND action_id LIKE $2",[locationId,prefix+"%"])).rows[0].c);
+  goalCount=Number((await qc.query("SELECT COUNT(*) c FROM mpp_location_goals_v1 WHERE location_id=$1 AND last_action_id LIKE $2",[locationId,prefix+"%"])).rows[0].c);
+ }finally{qc.release();}
+ const checks:any={
+  B01:rowCount===9,
+  B02:validationDenied&&rows[1].beginning_active_memberships===0&&rows[2].retail_lane_cars===0,
+  B03:scopeDenied,
+  B04:replay.idempotent&&changedDuplicateDenied&&rowCount===9,
+  B05:rows.every(r=>r.source_type===sourceType&&r.submitted_by_ghl_user_id===actorId&&r.timezone_snapshot==="America/New_York"&&r.currency==="USD"),
+  B06:positive.membershipConversionRate===40/140&&positive.weeklyChurnRate===13/1080&&z1.weeklyChurnRate===null&&z2.membershipConversionRate===null,
+  B07:positive.weeklyEarningsMinor===1200000&&positive.activeMemberships===1111,
+  B08:history.total===9&&!!detail&&events.length===2,
+  B09:corrected.report.report_version===2&&correctionReplay.idempotent&&staleDenied&&events.length===2,
+  B10:prefill?.priorReportId===current.report_id&&prefill?.prefilledBeginningActiveMemberships===1111,
+  B11:summary?.average?.available===true&&summary?.average?.requiredCount===8&&summary?.average?.metrics?.newMembershipSales?.relativeDifference!==null,
+  B12:partial.available===false&&partial.completedCount===2,
+  B13:goalCount===5&&retailGoalDenied,
+  B14:scopeDenied,
+  B15:quarantineCount===1,
+  B16:rollbackAbsent&&eventCount===10&&deriveLocationMetrics(corrected.report).membershipConversionRate===positive.membershipConversionRate
+ };
+ return {passed:Object.values(checks).every(Boolean),checks,evidence:{locationId,rowCount,eventCount,goalCount,quarantineCount,currentReportVersion:corrected.report.report_version,conversion:positive.membershipConversionRate,churn:positive.weeklyChurnRate,averageCount:summary?.average?.requiredCount,averageAvailable:summary?.average?.available,historyCount:history.total,rollbackAbsent,sourceType,formulaVersion:LOCATION_FORMULA_VERSION},cleanup:{fixtures:"preserved as clearly labeled Scope/Test staging history",rerun:"idempotent cleanup by source/action prefix"}};
+}
