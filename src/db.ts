@@ -88,10 +88,6 @@ export async function initializeAssignmentIndex() {
     location_id TEXT NOT NULL, ghl_user_id TEXT NOT NULL, record_id TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (location_id, ghl_user_id),
     UNIQUE (location_id, record_id))`);
-  await db.query(`INSERT INTO mpp_assignment_index (location_id, ghl_user_id, record_id, updated_at)
-    VALUES ($1,$2,$3,NOW()) ON CONFLICT (location_id, ghl_user_id)
-    DO UPDATE SET record_id=EXCLUDED.record_id, updated_at=NOW()`,
-    ["e44pA2hEK8BXwer0eNYB", "fM1JdFIqwp0t2jRUDgo9", "6a9b05869290d69476eb9c0c"]);
   const result = await db.query(`SELECT COUNT(*)::int AS count FROM mpp_assignment_index`);
   return result.rows[0]?.count ?? 0;
 }
@@ -117,8 +113,71 @@ export async function initializePerformanceStore() {
     notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'submitted'
     CHECK (status IN ('submitted','verified','rejected')), verified_by TEXT, verified_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+
+  await db.query(`ALTER TABLE mpp_shift_logs
+    ADD COLUMN IF NOT EXISTS team_record_id TEXT,
+    ADD COLUMN IF NOT EXISTS team_name_snapshot TEXT,
+    ADD COLUMN IF NOT EXISTS review_status TEXT,
+    ADD COLUMN IF NOT EXISTS manager_note TEXT,
+    ADD COLUMN IF NOT EXISTS reviewed_by_ghl_user_id TEXT,
+    ADD COLUMN IF NOT EXISTS reviewed_by_name TEXT,
+    ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS review_version INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS last_review_action_id TEXT`);
+  await db.query(`UPDATE mpp_shift_logs SET review_status=CASE status
+    WHEN 'verified' THEN 'Verified' WHEN 'rejected' THEN 'Needs Review' ELSE 'Pending' END
+    WHERE review_status IS NULL`);
+  await db.query(`ALTER TABLE mpp_shift_logs ALTER COLUMN review_status SET DEFAULT 'Pending'`);
+  await db.query(`ALTER TABLE mpp_shift_logs ALTER COLUMN review_status SET NOT NULL`);
+  await db.query(`DO $ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='mpp_shift_logs_review_status_check') THEN
+      ALTER TABLE mpp_shift_logs ADD CONSTRAINT mpp_shift_logs_review_status_check
+      CHECK (review_status IN ('Pending','Verified','Needs Review'));
+    END IF;
+  END $`);
+
+  await db.query(`CREATE TABLE IF NOT EXISTS mpp_review_events (
+    id BIGSERIAL PRIMARY KEY,
+    activity_report_id BIGINT NOT NULL REFERENCES mpp_shift_logs(id),
+    location_id TEXT NOT NULL,
+    team_record_id TEXT NOT NULL,
+    actor_ghl_user_id TEXT NOT NULL,
+    actor_name TEXT NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    prior_status TEXT NOT NULL,
+    resulting_status TEXT NOT NULL,
+    manager_note TEXT,
+    action_id TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    expected_version INTEGER NOT NULL,
+    resulting_version INTEGER NOT NULL,
+    UNIQUE(activity_report_id, action_id)
+  )`);
+
+  await db.query(`CREATE TABLE IF NOT EXISTS mpp_reporting_team_destinations (
+    location_id TEXT NOT NULL,
+    ghl_user_id TEXT NOT NULL,
+    team_record_id TEXT NOT NULL,
+    team_name TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(location_id, ghl_user_id, team_record_id)
+  )`);
+
+  await db.query(`CREATE TABLE IF NOT EXISTS mpp_sm_team_management (
+    location_id TEXT NOT NULL,
+    sm_user_id TEXT NOT NULL,
+    team_record_id TEXT NOT NULL,
+    assignment_record_id TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(location_id, sm_user_id),
+    UNIQUE(location_id, team_record_id)
+  )`);
+
   await db.query(`CREATE INDEX IF NOT EXISTS idx_mpp_shift_logs_location_date ON mpp_shift_logs (location_id, shift_date DESC)`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_mpp_shift_logs_seller_date ON mpp_shift_logs (location_id, seller_user_id, shift_date DESC)`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_mpp_shift_logs_review_queue ON mpp_shift_logs (location_id, team_record_id, review_status, shift_date, id)`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_mpp_review_events_report_time ON mpp_review_events (activity_report_id, occurred_at)`);
 
   await db.query(`CREATE TABLE IF NOT EXISTS mpp_location_goals (
     location_id TEXT NOT NULL,
@@ -143,37 +202,165 @@ export async function initializePerformanceStore() {
   )`);
 }
 
+export async function upsertReportingTeamDestination(details:any) {
+  await getPool().query(`INSERT INTO mpp_reporting_team_destinations
+    (location_id,ghl_user_id,team_record_id,team_name,active,updated_at)
+    VALUES ($1,$2,$3,$4,$5,NOW())
+    ON CONFLICT(location_id,ghl_user_id,team_record_id) DO UPDATE SET
+    team_name=EXCLUDED.team_name,active=EXCLUDED.active,updated_at=NOW()`,
+    [details.locationId,details.ghlUserId,details.teamRecordId,details.teamName,details.active !== false]);
+}
+
+export async function getReportingTeamDestinations(locationId:string, ghlUserId:string) {
+  const result=await getPool().query(`SELECT team_record_id,team_name FROM mpp_reporting_team_destinations
+    WHERE location_id=$1 AND ghl_user_id=$2 AND active=TRUE ORDER BY team_name,team_record_id`,[locationId,ghlUserId]);
+  return result.rows;
+}
+
+export async function isValidReportingTeam(locationId:string, ghlUserId:string, teamRecordId:string) {
+  const result=await getPool().query(`SELECT team_record_id,team_name FROM mpp_reporting_team_destinations
+    WHERE location_id=$1 AND ghl_user_id=$2 AND team_record_id=$3 AND active=TRUE LIMIT 1`,
+    [locationId,ghlUserId,teamRecordId]);
+  return result.rows[0] ?? null;
+}
+
+export async function reconcileManagedTeam(details:any) {
+  const db=getPool();
+  const client=await db.connect();
+  try {
+    await client.query("BEGIN");
+    const byManager=await client.query(`SELECT team_record_id FROM mpp_sm_team_management
+      WHERE location_id=$1 AND sm_user_id=$2 FOR UPDATE`,[details.locationId,details.smUserId]);
+    if (byManager.rows[0] && byManager.rows[0].team_record_id !== details.teamRecordId) {
+      throw Object.assign(new Error("Sales Manager has conflicting Team management assignments"),{statusCode:403});
+    }
+    const byTeam=await client.query(`SELECT sm_user_id FROM mpp_sm_team_management
+      WHERE location_id=$1 AND team_record_id=$2 FOR UPDATE`,[details.locationId,details.teamRecordId]);
+    if (byTeam.rows[0] && byTeam.rows[0].sm_user_id !== details.smUserId) {
+      throw Object.assign(new Error("Managed Team is already assigned to another Sales Manager"),{statusCode:403});
+    }
+    await client.query(`INSERT INTO mpp_sm_team_management
+      (location_id,sm_user_id,team_record_id,assignment_record_id,updated_at)
+      VALUES ($1,$2,$3,$4,NOW())
+      ON CONFLICT(location_id,sm_user_id) DO UPDATE SET
+      team_record_id=EXCLUDED.team_record_id,assignment_record_id=EXCLUDED.assignment_record_id,updated_at=NOW()`,
+      [details.locationId,details.smUserId,details.teamRecordId,details.assignmentRecordId]);
+    await client.query("COMMIT");
+  } catch(error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
+}
+
 export async function createShiftLog(details: any) {
   const result = await getPool().query(`INSERT INTO mpp_shift_logs
-    (location_id,seller_user_id,seller_name,assignment_record_id,shift_date,opportunities,memberships_sold,notes)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    RETURNING id,shift_date,opportunities,memberships_sold,notes,status,created_at`,
+    (location_id,seller_user_id,seller_name,assignment_record_id,team_record_id,team_name_snapshot,
+     shift_date,opportunities,memberships_sold,notes,review_status)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Pending')
+    RETURNING id,team_record_id,team_name_snapshot,shift_date,opportunities,memberships_sold,notes,
+      review_status,review_version,created_at`,
     [details.locationId,details.sellerUserId,details.sellerName,details.assignmentRecordId,
-    details.shiftDate,details.opportunities,details.membershipsSold,details.notes ?? ""]);
+    details.teamRecordId,details.teamName,details.shiftDate,details.opportunities,
+    details.membershipsSold,details.notes ?? ""]);
   return result.rows[0];
 }
 
 export async function getSellerShiftLogs(locationId: string, sellerUserId: string, limit=20) {
   const safeLimit=Math.max(1,Math.min(100,Math.floor(limit)));
-  const result=await getPool().query(`SELECT id,shift_date,opportunities,memberships_sold,notes,status,
-    verified_by,verified_at,created_at FROM mpp_shift_logs WHERE location_id=$1 AND seller_user_id=$2
+  const result=await getPool().query(`SELECT id,team_record_id,team_name_snapshot,shift_date,
+    opportunities,memberships_sold,notes,review_status,manager_note,reviewed_by_name,reviewed_at,
+    review_version,created_at FROM mpp_shift_logs WHERE location_id=$1 AND seller_user_id=$2
     ORDER BY shift_date DESC,id DESC LIMIT $3`,[locationId,sellerUserId,safeLimit]);
   return result.rows;
 }
 
-export async function getReviewQueue(locationId:string) {
-  const result=await getPool().query(`SELECT id,seller_user_id,seller_name,shift_date,opportunities,
-    memberships_sold,notes,status,created_at FROM mpp_shift_logs WHERE location_id=$1 AND status='submitted'
-    ORDER BY shift_date ASC,id ASC`,[locationId]);
+export async function getSellerShiftLog(locationId:string,sellerUserId:string,logId:string) {
+  const result=await getPool().query(`SELECT id,team_record_id,team_name_snapshot,shift_date,
+    opportunities,memberships_sold,notes,review_status,manager_note,reviewed_by_name,reviewed_at,
+    review_version,created_at FROM mpp_shift_logs
+    WHERE id=$1 AND location_id=$2 AND seller_user_id=$3 LIMIT 1`,[logId,locationId,sellerUserId]);
+  return result.rows[0] ?? null;
+}
+
+export async function getReviewQueue(locationId:string,managedTeamId:string) {
+  const result=await getPool().query(`SELECT id,seller_user_id,seller_name,team_record_id,
+    team_name_snapshot,shift_date,opportunities,memberships_sold,notes,review_status,
+    manager_note,review_version,created_at FROM mpp_shift_logs
+    WHERE location_id=$1 AND team_record_id=$2 AND review_status='Pending'
+    ORDER BY shift_date ASC,id ASC`,[locationId,managedTeamId]);
   return result.rows;
 }
 
-export async function reviewShiftLog(details:any) {
-  const result=await getPool().query(`UPDATE mpp_shift_logs SET status=$4,verified_by=$3,verified_at=NOW(),updated_at=NOW()
-    WHERE id=$1 AND location_id=$2 AND status='submitted'
-    RETURNING id,seller_user_id,seller_name,shift_date,opportunities,memberships_sold,status,verified_by,verified_at`,
-    [details.logId,details.locationId,details.reviewerUserId,details.decision]);
+export async function getShiftLogForReview(locationId:string,managedTeamId:string,logId:string) {
+  const result=await getPool().query(`SELECT id,seller_user_id,seller_name,team_record_id,
+    team_name_snapshot,shift_date,opportunities,memberships_sold,notes,review_status,
+    manager_note,reviewed_by_ghl_user_id,reviewed_by_name,reviewed_at,review_version,created_at
+    FROM mpp_shift_logs WHERE id=$1 AND location_id=$2 AND team_record_id=$3 LIMIT 1`,
+    [logId,locationId,managedTeamId]);
   return result.rows[0] ?? null;
+}
+
+export async function reviewShiftLog(details:any) {
+  const db=getPool();
+  const client=await db.connect();
+  try {
+    await client.query("BEGIN");
+    const duplicate=await client.query(`SELECT resulting_status,resulting_version,manager_note,occurred_at
+      FROM mpp_review_events WHERE activity_report_id=$1 AND action_id=$2 LIMIT 1`,
+      [details.logId,details.actionId]);
+    if (duplicate.rows[0]) {
+      const existing=await client.query(`SELECT id,seller_user_id,seller_name,team_record_id,
+        team_name_snapshot,shift_date,opportunities,memberships_sold,notes,review_status,
+        manager_note,reviewed_by_ghl_user_id,reviewed_by_name,reviewed_at,review_version
+        FROM mpp_shift_logs WHERE id=$1 AND location_id=$2 AND team_record_id=$3 LIMIT 1`,
+        [details.logId,details.locationId,details.managedTeamId]);
+      await client.query("COMMIT");
+      return existing.rows[0] ? {log:existing.rows[0],idempotent:true} : null;
+    }
+    const locked=await client.query(`SELECT * FROM mpp_shift_logs
+      WHERE id=$1 AND location_id=$2 AND team_record_id=$3 FOR UPDATE`,
+      [details.logId,details.locationId,details.managedTeamId]);
+    const current=locked.rows[0];
+    if (!current) { await client.query("ROLLBACK"); return null; }
+    if (Number(current.review_version)!==Number(details.expectedVersion)) {
+      throw Object.assign(new Error("Review changed since it was opened"),{statusCode:409});
+    }
+    const prior=String(current.review_status);
+    const next=String(details.decision);
+    if (!((prior==="Pending"&&(next==="Verified"||next==="Needs Review")) ||
+      (prior==="Needs Review"&&next==="Verified"))) {
+      throw Object.assign(new Error("Review transition is not permitted"),{statusCode:409});
+    }
+    const suppliedNote=String(details.managerNote??"").trim();
+    const resultingNote=suppliedNote || String(current.manager_note??"").trim();
+    if (next==="Needs Review"&&!suppliedNote) {
+      throw Object.assign(new Error("Manager Note is required for Needs Review"),{statusCode:400});
+    }
+    if (prior==="Needs Review"&&next==="Verified"&&!resultingNote) {
+      throw Object.assign(new Error("An existing or supplied Manager Note is required"),{statusCode:400});
+    }
+    const legacyStatus=next==="Verified"?"verified":"rejected";
+    const nextVersion=Number(current.review_version)+1;
+    const updated=await client.query(`UPDATE mpp_shift_logs SET
+      review_status=$4,manager_note=$5,reviewed_by_ghl_user_id=$6,reviewed_by_name=$7,
+      reviewed_at=NOW(),review_version=$8,last_review_action_id=$9,status=$10,
+      verified_by=$6,verified_at=NOW(),updated_at=NOW()
+      WHERE id=$1 AND location_id=$2 AND team_record_id=$3
+      RETURNING id,seller_user_id,seller_name,team_record_id,team_name_snapshot,shift_date,
+        opportunities,memberships_sold,notes,review_status,manager_note,
+        reviewed_by_ghl_user_id,reviewed_by_name,reviewed_at,review_version`,
+      [details.logId,details.locationId,details.managedTeamId,next,resultingNote||null,
+       details.reviewerUserId,details.reviewerName,nextVersion,details.actionId,legacyStatus]);
+    await client.query(`INSERT INTO mpp_review_events
+      (activity_report_id,location_id,team_record_id,actor_ghl_user_id,actor_name,
+       prior_status,resulting_status,manager_note,action_id,correlation_id,
+       expected_version,resulting_version)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [details.logId,details.locationId,details.managedTeamId,details.reviewerUserId,
+       details.reviewerName,prior,next,resultingNote||null,details.actionId,
+       details.correlationId,details.expectedVersion,nextVersion]);
+    await client.query("COMMIT");
+    return {log:updated.rows[0],idempotent:false};
+  } catch(error) { try { await client.query("ROLLBACK"); } catch {} throw error; }
+  finally { client.release(); }
 }
 
 export async function getPerformanceRollup(details:any) {
