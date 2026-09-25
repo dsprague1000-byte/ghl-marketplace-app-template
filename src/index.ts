@@ -1,6 +1,6 @@
 import express, { Express, Response } from "express";
 import dotenv from "dotenv";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { GHL } from "./ghl";
 import { json } from "body-parser";
 import {
@@ -26,6 +26,7 @@ import {
   isValidReportingTeam,
   reconcileManagedTeam,
   reviewShiftLog,
+  runV1AReviewIntegrityProof,
   upsertAssignmentIndex,
   upsertLocationGoal,
   upsertSellerGoal,
@@ -533,6 +534,28 @@ app.post("/manager/review-shift", async (req,res) => {
       status:result.log.review_status,version:result.log.review_version,idempotent:result.idempotent});
     return res.json({reviewed:true,...result});
   } catch(error:any) { return sendSafeError(res,error); }
+});
+
+app.post("/diagnostics/v1a-review-integrity", async (req,res) => {
+  try {
+    const viewer:any=await resolveTrustedAssignment(req.body?.key);
+    const configuredLocation=String(process.env.MPP_TEST_FIXTURE_LOCATION_ID??"").trim();
+    if (!configuredLocation||configuredLocation!=="aGn7Uf2qec6eTb9M6k1K"||
+        viewer.activeLocation!==configuredLocation) {
+      return res.status(404).json({error:"Diagnostic unavailable"});
+    }
+    const managed=await resolveManagedTeam(viewer);
+    const proofId=randomUUID();
+    const result=await runV1AReviewIntegrityProof({proofId,locationId:viewer.activeLocation,
+      managedTeamId:managed.teamRecordId,managedTeamName:managed.teamName,
+      reviewerUserId:viewer.userId,reviewerName:viewer.assignment.assignment_name||"Staging Manager",
+      shiftDate:new Date().toISOString().slice(0,10)});
+    console.log("[V1A-integrity-proof]",{proofId,
+      ac7:result.ac7.pass,ac16:result.ac16.pass,ac17:result.ac17.pass,
+      cleanup:result.cleanup.pass,unauthorizedEventCount:result.ac16.eventCountAfter,
+      replayVersion:result.ac17.replay.version,replayEventCount:result.ac17.replay.eventCount});
+    return res.json(result);
+  } catch(error:any) { return sendSafeError(res,error,"integrity_proof_failed"); }
 });
 
 app.post("/performance/rollup", async (req, res) => {
