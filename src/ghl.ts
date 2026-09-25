@@ -2,7 +2,7 @@ import qs from "qs";
 import axios, { AxiosRequestConfig, InternalAxiosRequestConfig } from "axios";
 import { createDecipheriv, createHash } from 'node:crypto';
 
-import { Model, TokenType } from "./model";
+import { InstallationDetails, Model, TokenType } from "./model";
 
 /* The GHL class is responsible for handling authorization, making API requests, and managing access
 tokens and refresh tokens for a specific resource. */
@@ -44,7 +44,7 @@ export class GHL {
         "Please provide code when making call to authorization Handler"
       );
     }
-    await this.generateAccessTokenRefreshTokenPair(code);
+    return this.generateAccessTokenRefreshTokenPair(code);
   }
 
   decryptSSOData(key: string) {
@@ -136,14 +136,13 @@ export class GHL {
     locationId: string
   ) {
     const res = await this.requests(companyId).post(
-      "/oauth/locationToken",
-      {
-        companyId,
-        locationId,
-      },
+      "/oauth/location-token",
+      qs.stringify({ companyId, locationId }),
       {
         headers: {
-          Version: "2021-07-28",
+          Accept: "application/json",
+          "Content-Type": "application/x-www-form-urlencoded",
+          Version: "v3",
         },
       }
     );
@@ -194,7 +193,7 @@ export class GHL {
           client_secret: process.env.GHL_APP_CLIENT_SECRET,
           grant_type: "authorization_code",
           code,
-          user_type: "Location",
+          user_type: process.env.GHL_OAUTH_USER_TYPE || "Location",
           redirect_uri: process.env.GHL_OAUTH_REDIRECT_URI,
         }),
         { headers: { "content-type": "application/x-www-form-urlencoded" } }
@@ -213,6 +212,7 @@ export class GHL {
         stored_key: resp.data.locationId || resp.data.companyId || null,
         scope: resp.data.scope ?? null,
       }));
+      return resp.data as InstallationDetails;
     } catch (error: any) {
       if (error?.response) {
         console.error('[P018-diag] exchange HTTP error:', JSON.stringify({
