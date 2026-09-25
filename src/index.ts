@@ -13,6 +13,7 @@ import {
   getLocationGoal,
   getPerformanceRollup,
   getReviewQueue,
+  getReviewFollowUps,
   getReportingTeamDestinations,
   getSellerGoal,
   getSellerGoalsForLocation,
@@ -490,6 +491,15 @@ app.post("/manager/review-queue", async (req,res) => {
     const managed=await resolveManagedTeam(viewer);
     return res.json({selectedScopeLocation:viewer.activeLocation,managedTeam:managed,
       logs:await getReviewQueue(viewer.activeLocation,managed.teamRecordId)});
+  } catch(error:any) { return sendSafeError(res,error); }
+});
+
+app.post("/manager/review-follow-ups", async (req,res) => {
+  try {
+    const viewer:any=await resolveTrustedAssignment(req.body?.key);
+    const managed=await resolveManagedTeam(viewer);
+    return res.json({selectedScopeLocation:viewer.activeLocation,managedTeam:managed,
+      logs:await getReviewFollowUps(viewer.activeLocation,managed.teamRecordId)});
   } catch(error:any) { return sendSafeError(res,error); }
 });
 
