@@ -552,8 +552,15 @@ app.post("/diagnostics/v1a-review-integrity", async (req,res) => {
       shiftDate:new Date().toISOString().slice(0,10)});
     console.log("[V1A-integrity-proof]",{proofId,
       ac7:result.ac7.pass,ac16:result.ac16.pass,ac17:result.ac17.pass,
-      cleanup:result.cleanup.pass,unauthorizedEventCount:result.ac16.eventCountAfter,
-      replayVersion:result.ac17.replay.version,replayEventCount:result.ac17.replay.eventCount});
+      cleanup:result.cleanup.pass,
+      unauthorizedBefore:{status:result.ac16.before.review_status,
+        version:Number(result.ac16.before.review_version),eventCount:result.ac16.eventCountBefore},
+      unauthorizedAfter:{status:result.ac16.after.review_status,
+        version:Number(result.ac16.after.review_version),eventCount:result.ac16.eventCountAfter},
+      replayFirst:{idempotent:result.ac17.first.idempotent,
+        version:result.ac17.first.version,eventCount:result.ac17.first.eventCount},
+      replayExact:{idempotent:result.ac17.replay.idempotent,
+        version:result.ac17.replay.version,eventCount:result.ac17.replay.eventCount}});
     return res.json(result);
   } catch(error:any) { return sendSafeError(res,error,"integrity_proof_failed"); }
 });
