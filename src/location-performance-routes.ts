@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseAverageCount, parseCanonicalReportInput, requireText, validateGoal, isMonday } from "./location-performance";
-import { correctLocationReport, getAverageSetting, getEffectiveGoals, getLocationReport, getLocationReportHistory, getLocationSummary, getPrefill, getReportEvents, setAverageSetting, setLocationGoalV1, submitLocationReport } from "./location-performance-store";
+import { correctLocationReport, getAverageSetting, getEffectiveGoals, getLocationReport, getLocationReportHistory, getLocationSummary, getPrefill, getReportEvents, runV1BIntegrityProof, setAverageSetting, setLocationGoalV1, submitLocationReport } from "./location-performance-store";
 
 const READ_ROLES=new Set(["general_manager","regional_manager","owner"]);
 function send(res:any,e:any,code="location_performance_failed"){const status=e?.statusCode??500;console.error("[V1B] request error",{status,code,message:e?.message??"unknown"});return res.status(status).json({error:e?.message??code});}
@@ -19,4 +19,14 @@ export function registerLocationPerformanceRoutes(app:any,deps:any){
  app.post("/location-performance/average-settings",async(req:any,res:any)=>{try{const x=await viewer(req.body);return res.json({setting:await getAverageSetting(x.locationId)});}catch(e){return send(res,e);}});
  app.post("/location-performance/average-settings/set",async(req:any,res:any)=>{try{const x=await viewer(req.body,true);return res.json({setting:await setAverageSetting({...x,reportCount:parseAverageCount(req.body?.reportCount),expectedVersion:version(req.body?.expectedVersion),actionId:actionId(req.body?.actionId)})});}catch(e){return send(res,e);}});
  app.post("/location-performance/locations/glance",async(req:any,res:any)=>{try{const base=await deps.resolveTrustedAssignment(req.body?.key);if(!base.assignmentFound||!deps.isActive(base.assignment.active)||!READ_ROLES.has(base.assignment.mpp_role))return res.status(403).json({error:"Location Performance access requires manager role"});const requested=Array.isArray(req.body?.locationIds)&&req.body.locationIds.length?req.body.locationIds:[req.body?.selectedScopeLocation??base.activeLocation];const unique=[...new Set(requested.map((v:any)=>String(v).trim()).filter(Boolean))].slice(0,100);const locations=[];for(const id of unique){const authorized=await deps.resolveAuthorizedLocation(base,id);locations.push({locationId:authorized,summary:await getLocationSummary(authorized)});}return res.json({locations});}catch(e){return send(res,e);}});
+ app.post("/diagnostics/v1b-integrity",async(req:any,res:any)=>{try{
+  const testLocation="aGn7Uf2qec6eTb9M6k1K";
+  if(process.env.RENDER_SERVICE_NAME!=="mpp-v1-staging")return res.status(404).json({error:"Not found"});
+  const base=await deps.resolveTrustedAssignment(req.body?.key);
+  if(!base.assignmentFound||!deps.isActive(base.assignment.active)||base.activeLocation!==testLocation)return res.status(403).json({error:"Scope/Test active assignment required"});
+  let scopeDenied=false;try{await deps.resolveAuthorizedLocation(base,"v1b01-unauthorized-location");}catch{scopeDenied=true;}
+  const result=await runV1BIntegrityProof(testLocation,scopeDenied);
+  console.log("[V1B] integrity proof",{passed:result.passed,checks:result.checks,locationId:testLocation,secretValuesLogged:false});
+  return res.json(result);
+ }catch(e){return send(res,e,"v1b_integrity_failed");}});
 }
