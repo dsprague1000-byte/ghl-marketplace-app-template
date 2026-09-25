@@ -295,6 +295,15 @@ export async function getReviewQueue(locationId:string,managedTeamId:string) {
   return result.rows;
 }
 
+export async function getReviewFollowUps(locationId:string,managedTeamId:string) {
+  const result=await getPool().query(`SELECT id,seller_user_id,seller_name,team_record_id,
+    team_name_snapshot,shift_date,opportunities,memberships_sold,notes,review_status,
+    manager_note,review_version,created_at FROM mpp_shift_logs
+    WHERE location_id=$1 AND team_record_id=$2 AND review_status='Needs Review'
+    ORDER BY shift_date ASC,id ASC`,[locationId,managedTeamId]);
+  return result.rows;
+}
+
 export async function getShiftLogForReview(locationId:string,managedTeamId:string,logId:string) {
   const result=await getPool().query(`SELECT id,seller_user_id,seller_name,team_record_id,
     team_name_snapshot,shift_date,opportunities,memberships_sold,notes,review_status,
