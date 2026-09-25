@@ -38,6 +38,8 @@ import {
   upsertScopeGrant,
 } from "./scope-grants";
 import { initializeTrainingStore, registerTrainingRoutes } from "./training";
+import { initializeLocationPerformanceStore } from "./location-performance-store";
+import { registerLocationPerformanceRoutes } from "./location-performance-routes";
 
 const path = __dirname + "/ui/dist/";
 dotenv.config();
@@ -683,6 +685,8 @@ app.post("/reports/weekly/save", async (req, res) => {
   } catch (error: any) { return sendSafeError(res, error, "weekly_report_save_failed"); }
 });
 
+registerLocationPerformanceRoutes(app, { resolveTrustedAssignment, resolveAuthorizedLocation, isActive });
+
 app.get("/", (_req, res) => res.sendFile(path + "index.html"));
 async function start() {
   try {
@@ -697,10 +701,12 @@ async function start() {
     }
     const assignmentIndexCount = await initializeAssignmentIndex();
     await initializePerformanceStore();
+    await initializeLocationPerformanceStore();
     const scopeGrantCount = await initializeScopeGrantStore();
     const trainingStatusCount = await initializeTrainingStore();
     console.log("[P019A] OAuth store ready", { hydratedCount });
     console.log("[P019B] Assignment index ready", { assignmentIndexCount });
+    console.log("[V1B] Location Performance store ready");
     console.log("[P026A] Location goals ready");
     console.log("[P026B] Seller goals ready");
     console.log("[P027A] Weekly report integration ready");
