@@ -5,7 +5,8 @@ import { addUtcDays, deriveLocationMetrics, LOCATION_FORMULA_VERSION, summarizeA
 let pool:any=null;
 function db(){ if(pool)return pool; const cs=process.env.DATABASE_URL; if(!cs)throw new Error("DATABASE_URL is required"); pool=new Pool({connectionString:cs}); return pool; }
 function hash(v:any){return createHash("sha256").update(JSON.stringify(v)).digest("hex");}
-function safeRow(r:any){ if(!r)return null; return {...r,beginning_active_memberships:Number(r.beginning_active_memberships),ending_active_memberships:Number(r.ending_active_memberships),new_membership_sales:Number(r.new_membership_sales),retail_lane_cars:Number(r.retail_lane_cars),cancellations_during_period:Number(r.cancellations_during_period),gross_location_revenue_minor:Number(r.gross_location_revenue_minor),report_version:Number(r.report_version)};}
+function isoDate(value:any){ if(!value)return value; if(typeof value==="string")return value.slice(0,10); return new Date(value).toISOString().slice(0,10); }
+function safeRow(r:any){ if(!r)return null; return {...r,week_start_date:isoDate(r.week_start_date),week_end_date:isoDate(r.week_end_date),beginning_active_memberships:Number(r.beginning_active_memberships),ending_active_memberships:Number(r.ending_active_memberships),new_membership_sales:Number(r.new_membership_sales),retail_lane_cars:Number(r.retail_lane_cars),cancellations_during_period:Number(r.cancellations_during_period),gross_location_revenue_minor:Number(r.gross_location_revenue_minor),report_version:Number(r.report_version)};}
 
 export async function initializeLocationPerformanceStore(){
  const c=await db().connect(); try{await c.query("BEGIN");
