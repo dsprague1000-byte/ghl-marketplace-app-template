@@ -18,6 +18,15 @@ export async function initializeOAuthStore() {
     refresh_token TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`);
+  await db.query(`CREATE TABLE IF NOT EXISTS oauth_callback_receipts (
+    code_hash TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('pending','complete','failed')),
+    company_id TEXT,
+    location_id TEXT,
+    error_code TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
   const result = await db.query(`SELECT resource_id, resource_type, company_id, location_id,
     user_type, access_token, refresh_token, expires_at FROM oauth_installations`);
   return result.rows;
@@ -34,6 +43,35 @@ export async function upsertOAuthInstallation(details: any) {
     expires_at=EXCLUDED.expires_at, updated_at=NOW()`, [details.resourceId, details.resourceType,
     details.companyId ?? null, details.locationId ?? null, details.userType, details.accessToken,
     details.refreshToken, details.expiresAt]);
+}
+
+
+export async function claimOAuthCallback(codeHash: string) {
+  const db = getPool();
+  const inserted = await db.query(`INSERT INTO oauth_callback_receipts
+    (code_hash,status,created_at,updated_at) VALUES ($1,'pending',NOW(),NOW())
+    ON CONFLICT (code_hash) DO NOTHING RETURNING status,company_id,location_id,error_code`, [codeHash]);
+  if (inserted.rowCount === 1) return { claimed: true, ...inserted.rows[0] };
+  const existing = await db.query(`SELECT status,company_id,location_id,error_code
+    FROM oauth_callback_receipts WHERE code_hash=$1 LIMIT 1`, [codeHash]);
+  return { claimed: false, ...(existing.rows[0] ?? { status: "pending" }) };
+}
+
+export async function getOAuthCallbackReceipt(codeHash: string) {
+  const result = await getPool().query(`SELECT status,company_id,location_id,error_code
+    FROM oauth_callback_receipts WHERE code_hash=$1 LIMIT 1`, [codeHash]);
+  return result.rows[0] ?? null;
+}
+
+export async function completeOAuthCallback(codeHash: string, companyId: string|null, locationId: string|null) {
+  await getPool().query(`UPDATE oauth_callback_receipts SET status='complete',
+    company_id=$2,location_id=$3,error_code=NULL,updated_at=NOW() WHERE code_hash=$1`,
+    [codeHash, companyId, locationId]);
+}
+
+export async function failOAuthCallback(codeHash: string, errorCode: string) {
+  await getPool().query(`UPDATE oauth_callback_receipts SET status='failed',
+    error_code=$2,updated_at=NOW() WHERE code_hash=$1 AND status='pending'`, [codeHash, errorCode]);
 }
 
 export async function updateOAuthTokenPair(details: any) {
