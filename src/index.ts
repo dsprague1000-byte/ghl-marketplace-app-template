@@ -233,6 +233,32 @@ async function waitForOAuthReceipt(codeHash: string) {
   return getOAuthCallbackReceipt(codeHash);
 }
 
+async function recoverCompletedOAuthReceipt(codeHash: string) {
+  const targetLocationId = String(process.env.GHL_BOOTSTRAP_LOCATION_ID ?? "").trim();
+  if (!targetLocationId) return false;
+  try {
+    const proof = await bootstrapConfiguredLocation();
+    if (!proof) return false;
+    const company = Object.entries(ghl.model.installationObjects)
+      .find(([, installation]) => installation.userType === "Company");
+    await completeOAuthCallback(codeHash, company?.[0] ?? null, targetLocationId);
+    console.log("[V1A-00-oauth] recovered completed installation", {
+      companyId: company?.[0] ?? null,
+      locationId: targetLocationId,
+      read_http_status: proof.http_status,
+      read_total: proof.total,
+    });
+    return true;
+  } catch (error: any) {
+    console.error("[V1A-00-oauth] recovery pending", {
+      status: error?.response?.status ?? null,
+      message: error?.message ?? "unknown",
+      locationId: targetLocationId,
+    });
+    return false;
+  }
+}
+
 async function bootstrapConfiguredLocation() {
   const targetLocationId = String(process.env.GHL_BOOTSTRAP_LOCATION_ID ?? "").trim();
   if (!targetLocationId) return null;
@@ -262,10 +288,20 @@ app.get("/oauth/callback", async (req, res) => {
 
   if (!claim.claimed) {
     if (claim.status === "complete") return res.status(200).send("MPP OAuth Installation Already Complete");
-    if (claim.status === "failed") return res.status(500).send("MPP OAuth Installation Previously Failed");
+    if (claim.status === "failed") {
+      if (await recoverCompletedOAuthReceipt(codeHash)) {
+        return res.status(200).send("MPP OAuth Installation Already Complete");
+      }
+      return res.status(500).send("MPP OAuth Installation Previously Failed");
+    }
     const receipt = await waitForOAuthReceipt(codeHash);
     if (receipt?.status === "complete") return res.status(200).send("MPP OAuth Installation Already Complete");
-    if (receipt?.status === "failed") return res.status(500).send("MPP OAuth Installation Previously Failed");
+    if (receipt?.status === "failed") {
+      if (await recoverCompletedOAuthReceipt(codeHash)) {
+        return res.status(200).send("MPP OAuth Installation Already Complete");
+      }
+      return res.status(500).send("MPP OAuth Installation Previously Failed");
+    }
     return res.status(202).send("MPP OAuth Installation Processing");
   }
 
