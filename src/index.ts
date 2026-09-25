@@ -13,12 +13,17 @@ import {
   getLocationGoal,
   getPerformanceRollup,
   getReviewQueue,
+  getReportingTeamDestinations,
   getSellerGoal,
   getSellerGoalsForLocation,
   getSellerShiftLogs,
+  getSellerShiftLog,
+  getShiftLogForReview,
   getVerifiedPerformanceWindow,
   initializeAssignmentIndex,
   initializePerformanceStore,
+  isValidReportingTeam,
+  reconcileManagedTeam,
   reviewShiftLog,
   upsertAssignmentIndex,
   upsertLocationGoal,
@@ -42,6 +47,8 @@ const ghl = new GHL();
 const port = process.env.PORT;
 const SPOKE_COMPANY_ID = "NUAR0gljpx3i4RfDQPCf";
 const LPR_OBJECT = "custom_objects.location_performance_reports";
+const TEAM_OBJECT = "custom_objects.teams";
+const ASSIGNMENT_OBJECT = "custom_objects.mpp_user_assignment";
 const MANAGER_ROLES = new Set(["sales_manager", "general_manager", "regional_manager", "owner"]);
 const PROVISION_ROLES = new Set(["general_manager", "regional_manager", "owner"]);
 const LOCATION_GOAL_WRITE_ROLES = new Set(["general_manager", "regional_manager", "owner"]);
@@ -100,9 +107,20 @@ async function ensureLocationToken(activeLocation: string) {
   if (!ghl.checkInstallationExists(activeLocation)) throw Object.assign(new Error("Location token exchange produced no token"), { statusCode: 403 });
 }
 
-async function getRecordById(locationId: string, recordId: string) {
-  const response = await ghl.requests(locationId).get(`/objects/custom_objects.mpp_user_assignment/records/${recordId}`, { headers: { Version: "v3" } });
+async function getObjectRecordById(locationId: string, objectKey: string, recordId: string) {
+  const response = await ghl.requests(locationId).get(`/objects/${objectKey}/records/${recordId}`, { headers: { Version: "v3" } });
   return response.data?.record ?? null;
+}
+
+async function getRecordById(locationId: string, recordId: string) {
+  return getObjectRecordById(locationId, ASSIGNMENT_OBJECT, recordId);
+}
+
+async function searchObjectRecords(locationId:string,objectKey:string) {
+  const response=await ghl.requests(locationId).post(`/objects/${objectKey}/records/search`,{
+    locationId,page:1,pageLimit:100,
+  },{headers:{Version:"v3"}});
+  return response.data?.records ?? [];
 }
 
 async function findWeeklyReport(locationId: string, weekStart: string) {
@@ -158,7 +176,32 @@ async function resolveTrustedAssignment(key: string) {
     active: record.properties?.active ?? null,
     assignment_name: record.properties?.assignment_name ?? null,
     ghl_user_id: record.properties?.ghl_user_id ?? null,
+    managed_team_id: String(record.properties?.managed_team_id ?? "").trim() || null,
   }};
+}
+
+async function resolveManagedTeam(viewer:any) {
+  if (!viewer.assignmentFound || !isActive(viewer.assignment.active) ||
+      viewer.assignment.mpp_role !== "sales_manager") {
+    throw Object.assign(new Error("Active Sales Manager assignment required"),{statusCode:403});
+  }
+  const managedTeamId=String(viewer.assignment.managed_team_id??"").trim();
+  if (!managedTeamId) throw Object.assign(new Error("Managed Team assignment is required"),{statusCode:403});
+  const team=await getObjectRecordById(viewer.activeLocation,TEAM_OBJECT,managedTeamId);
+  if (!team || !isActive(team.properties?.active)) {
+    throw Object.assign(new Error("Managed Team is unavailable or inactive"),{statusCode:403});
+  }
+  const assignments=await searchObjectRecords(viewer.activeLocation,ASSIGNMENT_OBJECT);
+  const conflicts=assignments.filter((record:any)=>
+    record.id!==viewer.assignment.recordId &&
+    normalizeRole(record.properties?.mpp_role)==="sales_manager" &&
+    isActive(record.properties?.active) &&
+    String(record.properties?.managed_team_id??"").trim()===managedTeamId
+  );
+  if (conflicts.length) throw Object.assign(new Error("Managed Team has conflicting active manager assignments"),{statusCode:403});
+  await reconcileManagedTeam({locationId:viewer.activeLocation,smUserId:viewer.userId,
+    teamRecordId:managedTeamId,assignmentRecordId:viewer.assignment.recordId});
+  return {teamRecordId:managedTeamId,teamName:String(team.properties?.team_name??"Team")};
 }
 
 async function resolveAuthorizedLocation(viewer: any, requestedLocationId?: unknown) {
@@ -386,19 +429,99 @@ app.post("/admin/scope-grant", async (req, res) => {
   } catch (error:any) { return sendSafeError(res,error,"scope_grant_failed"); }
 });
 
+app.post("/seller/reporting-teams", async (req,res) => {
+  try {
+    const viewer:any=await resolveTrustedAssignment(req.body?.key);
+    if (!viewer.assignmentFound||!isActive(viewer.assignment.active)||
+        !["seller","sales_manager","general_manager"].includes(viewer.assignment.mpp_role)) {
+      return res.status(403).json({error:"Seller activity is not permitted"});
+    }
+    const teams=await getReportingTeamDestinations(viewer.activeLocation,viewer.userId);
+    return res.json({teams:teams.map((team:any)=>({teamId:team.team_record_id,teamName:team.team_name}))});
+  } catch(error:any) { return sendSafeError(res,error); }
+});
+
 app.post("/seller/shift-log", async (req, res) => {
   try {
-    const viewer: any = await resolveTrustedAssignment(req.body?.key);
-    if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || viewer.assignment.mpp_role !== "seller") return res.status(403).json({ error: "Seller role required" });
-    const opportunities = Number(req.body?.opportunities), membershipsSold = Number(req.body?.membershipsSold), shiftDate = String(req.body?.shiftDate ?? "");
-    if (!validDate(shiftDate) || !Number.isInteger(opportunities) || opportunities < 0 || !Number.isInteger(membershipsSold) || membershipsSold < 0 || membershipsSold > opportunities) return res.status(400).json({ error: "Invalid shift values" });
-    const log = await createShiftLog({ locationId: viewer.activeLocation, sellerUserId: viewer.userId, sellerName: viewer.assignment.assignment_name || viewer.ssoData.userName || "Seller", assignmentRecordId: viewer.assignment.recordId, shiftDate, opportunities, membershipsSold, notes: String(req.body?.notes ?? "").slice(0, 2000) });
-    return res.status(201).json({ created: true, log });
-  } catch (error: any) { return sendSafeError(res, error); }
+    const viewer:any=await resolveTrustedAssignment(req.body?.key);
+    if (!viewer.assignmentFound||!isActive(viewer.assignment.active)||
+        !["seller","sales_manager","general_manager"].includes(viewer.assignment.mpp_role)) {
+      return res.status(403).json({error:"Seller activity is not permitted"});
+    }
+    const opportunities=Number(req.body?.opportunities);
+    const membershipsSold=Number(req.body?.membershipsSold);
+    const shiftDate=String(req.body?.shiftDate??"");
+    const teamRecordId=String(req.body?.reportToTeamId??"").trim();
+    if (!validDate(shiftDate)||!Number.isInteger(opportunities)||opportunities<0||
+        !Number.isInteger(membershipsSold)||membershipsSold<0||membershipsSold>opportunities||
+        !teamRecordId) return res.status(400).json({error:"Invalid shift values or Report to Team"});
+    const team=await isValidReportingTeam(viewer.activeLocation,viewer.userId,teamRecordId);
+    if (!team) return res.status(403).json({error:"Report to Team destination is not authorized"});
+    const log=await createShiftLog({locationId:viewer.activeLocation,sellerUserId:viewer.userId,
+      sellerName:viewer.assignment.assignment_name||viewer.ssoData.userName||"Seller",
+      assignmentRecordId:viewer.assignment.recordId,teamRecordId,teamName:team.team_name,
+      shiftDate,opportunities,membershipsSold,notes:String(req.body?.notes??"").slice(0,2000)});
+    return res.status(201).json({created:true,log});
+  } catch(error:any) { return sendSafeError(res,error); }
 });
-app.post("/seller/shift-logs", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active)) return res.status(403).json({ error: "Active MPP assignment required" }); return res.json({ logs: await getSellerShiftLogs(viewer.activeLocation, viewer.userId, 30) }); } catch (error: any) { return sendSafeError(res, error); } });
-app.post("/manager/review-queue", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !MANAGER_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Manager role required" }); const selectedLocation = await resolveAuthorizedLocation(viewer, req.body?.selectedScopeLocation); return res.json({ selectedScopeLocation: selectedLocation, logs: await getReviewQueue(selectedLocation) }); } catch (error: any) { return sendSafeError(res, error); } });
-app.post("/manager/review-shift", async (req, res) => { try { const viewer: any = await resolveTrustedAssignment(req.body?.key); if (!viewer.assignmentFound || !isActive(viewer.assignment.active) || !MANAGER_ROLES.has(viewer.assignment.mpp_role)) return res.status(403).json({ error: "Manager role required" }); if (!req.body?.logId || !["verified", "rejected"].includes(req.body?.decision)) return res.status(400).json({ error: "Valid logId and decision required" }); const log = await reviewShiftLog({ locationId: viewer.activeLocation, logId: String(req.body.logId), reviewerUserId: viewer.userId, decision: req.body.decision }); return log ? res.json({ reviewed: true, log }) : res.status(409).json({ error: "Shift log is not pending or was not found" }); } catch (error: any) { return sendSafeError(res, error); } });
+
+app.post("/seller/shift-logs", async (req,res) => {
+  try {
+    const viewer:any=await resolveTrustedAssignment(req.body?.key);
+    if (!viewer.assignmentFound||!isActive(viewer.assignment.active)) return res.status(403).json({error:"Active MPP assignment required"});
+    return res.json({logs:await getSellerShiftLogs(viewer.activeLocation,viewer.userId,30)});
+  } catch(error:any) { return sendSafeError(res,error); }
+});
+
+app.post("/seller/shift-log-detail", async (req,res) => {
+  try {
+    const viewer:any=await resolveTrustedAssignment(req.body?.key);
+    if (!viewer.assignmentFound||!isActive(viewer.assignment.active)) return res.status(403).json({error:"Active MPP assignment required"});
+    const log=await getSellerShiftLog(viewer.activeLocation,viewer.userId,String(req.body?.logId??""));
+    return log?res.json({log}):res.status(404).json({error:"Activity Report not found"});
+  } catch(error:any) { return sendSafeError(res,error); }
+});
+
+app.post("/manager/review-queue", async (req,res) => {
+  try {
+    const viewer:any=await resolveTrustedAssignment(req.body?.key);
+    const managed=await resolveManagedTeam(viewer);
+    return res.json({selectedScopeLocation:viewer.activeLocation,managedTeam:managed,
+      logs:await getReviewQueue(viewer.activeLocation,managed.teamRecordId)});
+  } catch(error:any) { return sendSafeError(res,error); }
+});
+
+app.post("/manager/review-shift-detail", async (req,res) => {
+  try {
+    const viewer:any=await resolveTrustedAssignment(req.body?.key);
+    const managed=await resolveManagedTeam(viewer);
+    const log=await getShiftLogForReview(viewer.activeLocation,managed.teamRecordId,String(req.body?.logId??""));
+    return log?res.json({managedTeam:managed,log}):res.status(404).json({error:"Activity Report not found"});
+  } catch(error:any) { return sendSafeError(res,error); }
+});
+
+app.post("/manager/review-shift", async (req,res) => {
+  try {
+    const viewer:any=await resolveTrustedAssignment(req.body?.key);
+    const managed=await resolveManagedTeam(viewer);
+    const decision=String(req.body?.decision??"");
+    const actionId=String(req.body?.reviewActionId??"").trim();
+    const expectedVersion=Number(req.body?.expectedReviewVersion);
+    if (!req.body?.logId||!["Verified","Needs Review"].includes(decision)||!actionId||
+        !Number.isInteger(expectedVersion)||expectedVersion<0) {
+      return res.status(400).json({error:"Complete review action context is required"});
+    }
+    const result=await reviewShiftLog({locationId:viewer.activeLocation,managedTeamId:managed.teamRecordId,
+      logId:String(req.body.logId),reviewerUserId:viewer.userId,
+      reviewerName:viewer.assignment.assignment_name||viewer.ssoData.userName||"Manager",
+      decision,managerNote:String(req.body?.managerNote??"").slice(0,2000),
+      expectedVersion,actionId,correlationId:actionId});
+    if (!result) return res.status(404).json({error:"Activity Report not found"});
+    console.log("[V1A-review]",{reportId:String(req.body.logId),actionId,
+      status:result.log.review_status,version:result.log.review_version,idempotent:result.idempotent});
+    return res.json({reviewed:true,...result});
+  } catch(error:any) { return sendSafeError(res,error); }
+});
 
 app.post("/performance/rollup", async (req, res) => {
   try {
