@@ -438,6 +438,7 @@ app.post("/seller/reporting-teams", async (req,res) => {
       return res.status(403).json({error:"Seller activity is not permitted"});
     }
     const teams=await getReportingTeamDestinations(viewer.activeLocation,viewer.userId);
+    console.log("[V1A-reporting-teams]", { userId: viewer.userId, activeLocation: viewer.activeLocation, teamCount: teams.length });
     return res.json({teams:teams.map((team:any)=>({teamId:team.team_record_id,teamName:team.team_name}))});
   } catch(error:any) { return sendSafeError(res,error); }
 });
