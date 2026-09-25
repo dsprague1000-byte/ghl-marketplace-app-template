@@ -116,7 +116,7 @@ export function deriveLocationMetrics(report: {
 
 export function mean(values: Array<number | null>) {
   if (!values.length || values.some((value) => value === null || !Number.isFinite(value))) return null;
-  return values.reduce((sum, value) => sum + Number(value), 0) / values.length;
+  return values.reduce<number>((sum, value) => sum + Number(value), 0) / values.length;
 }
 
 export function relativeDifference(current: number | null, average: number | null) {
