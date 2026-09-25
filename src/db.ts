@@ -179,6 +179,19 @@ export async function initializePerformanceStore() {
   await db.query(`CREATE INDEX IF NOT EXISTS idx_mpp_shift_logs_review_queue ON mpp_shift_logs (location_id, team_record_id, review_status, shift_date, id)`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_mpp_review_events_report_time ON mpp_review_events (activity_report_id, occurred_at)`);
 
+  const fixtureLocation=process.env.MPP_TEST_FIXTURE_LOCATION_ID;
+  const fixtureSeller=process.env.MPP_TEST_FIXTURE_SELLER_USER_ID;
+  const fixtureTeam=process.env.MPP_TEST_FIXTURE_TEAM_ID;
+  const fixtureTeamName=process.env.MPP_TEST_FIXTURE_TEAM_NAME;
+  if (fixtureLocation && fixtureSeller && fixtureTeam && fixtureTeamName) {
+    await db.query(`INSERT INTO mpp_reporting_team_destinations
+      (location_id,ghl_user_id,team_record_id,team_name,active,updated_at)
+      VALUES ($1,$2,$3,$4,TRUE,NOW())
+      ON CONFLICT(location_id,ghl_user_id,team_record_id) DO UPDATE SET
+      team_name=EXCLUDED.team_name,active=TRUE,updated_at=NOW()`,
+      [fixtureLocation,fixtureSeller,fixtureTeam,fixtureTeamName]);
+  }
+
   await db.query(`CREATE TABLE IF NOT EXISTS mpp_location_goals (
     location_id TEXT NOT NULL,
     goal_month TEXT NOT NULL CHECK (goal_month ~ '^\\d{4}-\\d{2}$'),
