@@ -135,25 +135,37 @@ export class GHL {
     companyId: string,
     locationId: string
   ) {
-    const res = await this.requests(companyId).post(
-      "/oauth/location-token",
-      qs.stringify({ companyId, locationId }),
-      {
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/x-www-form-urlencoded",
-          Version: "v3",
-        },
-      }
-    );
-    await this.model.saveInstallationInfo(res.data);
-    console.log('[P027A-location-token] rederived:', JSON.stringify({
-      locationId: res.data.locationId ?? locationId,
-      companyId: res.data.companyId ?? companyId,
-      userType: res.data.userType ?? null,
-      expires_in: res.data.expires_in ?? null,
-      scope: res.data.scope ?? null,
-    }));
+    try {
+      const res = await this.requests(companyId).post(
+        "/oauth/location-token",
+        qs.stringify({ companyId, locationId }),
+        {
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            Version: "v3",
+          },
+        }
+      );
+      await this.model.saveInstallationInfo(res.data);
+      console.log('[P027A-location-token] rederived:', JSON.stringify({
+        locationId: res.data.locationId ?? locationId,
+        companyId: res.data.companyId ?? companyId,
+        userType: res.data.userType ?? null,
+        expires_in: res.data.expires_in ?? null,
+        scope: res.data.scope ?? null,
+      }));
+    } catch (error: any) {
+      console.error('[P027A-location-token] HTTP error:', JSON.stringify({
+        status: error?.response?.status ?? null,
+        error: error?.response?.data?.error ?? null,
+        error_description: error?.response?.data?.error_description ?? null,
+        message: error?.response?.data?.message ?? error?.message ?? "unknown",
+        locationId,
+        companyId,
+      }));
+      throw error;
+    }
   }
 
   private async refreshAccessToken(resourceId: string) {
@@ -211,6 +223,9 @@ export class GHL {
         response_keys: Object.keys(resp.data),
         stored_key: resp.data.locationId || resp.data.companyId || null,
         scope: resp.data.scope ?? null,
+        isBulkInstallation: resp.data.isBulkInstallation ?? null,
+        installToFutureLocations: resp.data.installToFutureLocations ?? null,
+        approveAllLocations: resp.data.approveAllLocations ?? null,
       }));
       return resp.data as InstallationDetails;
     } catch (error: any) {
