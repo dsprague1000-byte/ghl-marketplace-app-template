@@ -129,13 +129,6 @@ export async function initializePerformanceStore() {
     WHERE review_status IS NULL`);
   await db.query(`ALTER TABLE mpp_shift_logs ALTER COLUMN review_status SET DEFAULT 'Pending'`);
   await db.query(`ALTER TABLE mpp_shift_logs ALTER COLUMN review_status SET NOT NULL`);
-  await db.query(`DO $ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='mpp_shift_logs_review_status_check') THEN
-      ALTER TABLE mpp_shift_logs ADD CONSTRAINT mpp_shift_logs_review_status_check
-      CHECK (review_status IN ('Pending','Verified','Needs Review'));
-    END IF;
-  END $`);
-
   await db.query(`CREATE TABLE IF NOT EXISTS mpp_review_events (
     id BIGSERIAL PRIMARY KEY,
     activity_report_id BIGINT NOT NULL REFERENCES mpp_shift_logs(id),
