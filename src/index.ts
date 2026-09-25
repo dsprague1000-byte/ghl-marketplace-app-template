@@ -387,6 +387,7 @@ app.get("/oauth/token-status", (_req, res) => { const locationId = "e44pA2hEK8BX
 app.post("/assignment-context", async (req, res) => {
   try {
     const viewer: any = await resolveTrustedAssignment(req.body?.key);
+    console.log("[V1A-assignment-context]", { userId: viewer.userId, activeLocation: viewer.activeLocation, assignmentFound: viewer.assignmentFound });
     if (!viewer.assignmentFound) return res.json({ trustedUserId: viewer.userId, activeLocation: viewer.activeLocation, tokenVerified: true, assignmentFound: false, assignment: null, capabilities: [], scopeLocations: [] });
     const role = viewer.assignment.mpp_role;
     const active = isActive(viewer.assignment.active);
