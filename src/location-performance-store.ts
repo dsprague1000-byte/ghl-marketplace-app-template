@@ -98,7 +98,7 @@ export async function runV1BIntegrityProof(locationId:string,scopeDenied:boolean
   await c.query("DELETE FROM mpp_location_goals_v1 WHERE location_id=$1 AND last_action_id LIKE $2",[locationId,prefix+"%"]);
   await c.query("DELETE FROM mpp_location_average_setting_events WHERE location_id=$1 AND action_id LIKE $2",[locationId,prefix+"%"]);
   await c.query("DELETE FROM mpp_location_average_settings WHERE location_id=$1 AND last_action_id LIKE $2",[locationId,prefix+"%"]);
-  await c.query("DELETE FROM mpp_legacy_lpr_quarantine WHERE location_id=$1 AND legacy_record_id LIKE $2",[locationId,prefix+"%"]);
+  await c.query("DELETE FROM mpp_legacy_lpr_quarantine WHERE location_id=$1 AND source_record_id LIKE $2",[locationId,prefix+"%"]);
   await c.query("COMMIT");
  }catch(e){await c.query("ROLLBACK");throw e;}finally{c.release();}
  const base=(weekStart:string,index:number,over:any={})=>({weekStart,timezoneSnapshot:"America/New_York",beginningActiveMemberships:1000+index*10,endingActiveMemberships:1008+index*10,newMembershipSales:20+index,retailLaneCars:100+index*5,cancellationsDuringPeriod:5+index,grossLocationRevenueMinor:1000000+index*25000,currency:"USD",notes:"Synthetic V1B-01 staging proof fixture",sourceType,sourceReference:prefix+weekStart,...over});
@@ -135,8 +135,8 @@ export async function runV1BIntegrityProof(locationId:string,scopeDenied:boolean
   await qc.query(`INSERT INTO mpp_location_performance_reports(report_id,location_id,week_start_date,week_end_date,timezone_snapshot,beginning_active_memberships,ending_active_memberships,new_membership_sales,retail_lane_cars,cancellations_during_period,gross_location_revenue_minor,currency,notes,source_type,submitted_by_ghl_user_id,submitted_by_name,formula_version,last_action_id) VALUES($1,$2,'2026-09-07','2026-09-13','America/New_York',1,1,0,0,0,0,'USD','rollback rehearsal',$3,$4,$5,$6,$7)`,[rollbackId,locationId,sourceType,actorId,actorName,LOCATION_FORMULA_VERSION,prefix+"rollback"]);
   await qc.query("ROLLBACK");
   rollbackAbsent=(await qc.query("SELECT 1 FROM mpp_location_performance_reports WHERE location_id=$1 AND last_action_id=$2",[locationId,prefix+"rollback"])).rowCount===0;
-  await qc.query(`INSERT INTO mpp_legacy_lpr_quarantine(quarantine_id,location_id,legacy_record_id,reason,raw_snapshot) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,[randomUUID(),locationId,prefix+"ambiguous-1","Retail washes and split revenue are not canonically equivalent",JSON.stringify({total_retail_washes_sold:123,retail_revenue:100,membership_revenue:50})]);
-  quarantineCount=Number((await qc.query("SELECT COUNT(*) c FROM mpp_legacy_lpr_quarantine WHERE location_id=$1 AND legacy_record_id LIKE $2",[locationId,prefix+"%"])).rows[0].c);
+  await qc.query(`INSERT INTO mpp_legacy_lpr_quarantine(quarantine_id,location_id,source_record_id,reason,raw_record) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,[randomUUID(),locationId,prefix+"ambiguous-1","Retail washes and split revenue are not canonically equivalent",JSON.stringify({total_retail_washes_sold:123,retail_revenue:100,membership_revenue:50})]);
+  quarantineCount=Number((await qc.query("SELECT COUNT(*) c FROM mpp_legacy_lpr_quarantine WHERE location_id=$1 AND source_record_id LIKE $2",[locationId,prefix+"%"])).rows[0].c);
   rowCount=Number((await qc.query("SELECT COUNT(*) c FROM mpp_location_performance_reports WHERE location_id=$1 AND source_type=$2",[locationId,sourceType])).rows[0].c);
   eventCount=Number((await qc.query("SELECT COUNT(*) c FROM mpp_location_report_events WHERE location_id=$1 AND action_id LIKE $2",[locationId,prefix+"%"])).rows[0].c);
   goalCount=Number((await qc.query("SELECT COUNT(*) c FROM mpp_location_goals_v1 WHERE location_id=$1 AND last_action_id LIKE $2",[locationId,prefix+"%"])).rows[0].c);
