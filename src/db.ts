@@ -421,6 +421,7 @@ export async function runV1AReviewIntegrityProof(details:any) {
       correlationId:replayActionId});
     const secondCount=await getPool().query(`SELECT COUNT(*)::int AS count FROM mpp_review_events
       WHERE activity_report_id=$1 AND action_id=$2`,[replayLog.id,replayActionId]);
+    if (!first || !second) throw new Error("Synthetic authorized review unexpectedly failed");
 
     const before=crossBefore.rows[0];
     const after=crossAfter.rows[0];
