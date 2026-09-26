@@ -7,7 +7,9 @@
     "build": "npx tsc && npm run build-ui && mkdir -p ./dist/ui/dist && cp -r ./src/ui/dist ./dist/ui",
     "build-ui": "rm -rf ./src/ui/dist && cd src/ui && npm ci && npm run build && cd ../../",
     "start": "node dist/index.js",
-    "dev": "npm run build-ui && ts-node-dev src/index.ts"
+    "dev": "npm run build-ui && ts-node-dev src/index.ts",
+    "typecheck": "npx tsc --noEmit",
+    "test:policy": "rm -rf .test-dist && npx tsc --outDir .test-dist && node --test .test-dist/location-performance.test.js .test-dist/people.test.js"
   },
   "repository": {
     "type": "git",

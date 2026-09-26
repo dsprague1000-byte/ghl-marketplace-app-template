@@ -40,6 +40,8 @@ import {
 import { initializeTrainingStore, registerTrainingRoutes } from "./training";
 import { initializeLocationPerformanceStore } from "./location-performance-store";
 import { registerLocationPerformanceRoutes } from "./location-performance-routes";
+import { initializePeopleStore } from "./people-store";
+import { registerPeopleRoutes } from "./people-routes";
 
 const path = __dirname + "/ui/dist/";
 dotenv.config();
@@ -686,8 +688,9 @@ app.post("/reports/weekly/save", async (req, res) => {
 });
 
 registerLocationPerformanceRoutes(app, { resolveTrustedAssignment, resolveAuthorizedLocation, isActive });
+registerPeopleRoutes(app, { resolveTrustedAssignment, resolveAuthorizedLocation, isActive });
 
-app.get("/health/version", (_req, res) => res.json({ service: "mpp-v1-staging", commit: process.env.RENDER_GIT_COMMIT ?? null, locationPerformance: "v1b" }));
+app.get("/health/version", (_req, res) => res.json({ service: "mpp-v1-staging", commit: process.env.RENDER_GIT_COMMIT ?? null, locationPerformance: "v1b", peopleOrganization: "v1c" }));
 app.get("/", (_req, res) => res.sendFile(path + "index.html"));
 async function start() {
   try {
@@ -704,10 +707,12 @@ async function start() {
     await initializePerformanceStore();
     await initializeLocationPerformanceStore();
     const scopeGrantCount = await initializeScopeGrantStore();
+    await initializePeopleStore();
     const trainingStatusCount = await initializeTrainingStore();
     console.log("[P019A] OAuth store ready", { hydratedCount });
     console.log("[P019B] Assignment index ready", { assignmentIndexCount });
     console.log("[V1B] Location Performance store ready");
+    console.log("[V1C] People and Organization store ready");
     console.log("[P026A] Location goals ready");
     console.log("[P026B] Seller goals ready");
     console.log("[P027A] Weekly report integration ready");

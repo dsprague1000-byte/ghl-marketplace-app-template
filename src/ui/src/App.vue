@@ -16,6 +16,8 @@
 
       <LocationPerformance v-if="activeView === 'location-performance'" :api="api" :selected-scope-location="selectedScopeLocation" :selected-scope-name="selectedScopeName" :scope-locations="scopeLocations" :role="role" @select-location="selectLocationPerformance" />
 
+      <PeopleAccess v-if="activeView === 'people-access'" :api="api" :selected-scope-location="selectedScopeLocation" :selected-scope-name="selectedScopeName" :can-manage="capabilities.includes('manage_people_access')" />
+
       <section v-if="activeView === 'weekly-report'" class="wide-card">
         <div class="report-history"><div class="section-heading"><div><p class="eyebrow">P027B · Weekly Report Ledger</p><h2>Report History</h2></div><button class="secondary-button" @click="loadReportHistory">Refresh history</button></div><table v-if="reportHistory.reports?.length" class="data-table"><thead><tr><th>Week</th><th>POS Sold</th><th>MPP Sold</th><th>Difference</th><th>Status</th><th>Retail Washes</th><th>Retail Revenue</th><th>Cancellations</th><th>Source</th><th>Action</th></tr></thead><tbody><tr v-for="report in reportHistory.reports" :key="report.recordId"><td>{{ report.weekStart }} → {{ report.weekEnd }}</td><td>{{ report.reportedSold }}</td><td>{{ report.mppSold }}</td><td>{{ report.difference === null ? '—' : signedInteger(report.difference) }}</td><td><span class="mini-pill" :class="`history-${report.status}`">{{ historyStatus(report.status) }}</span></td><td>{{ report.totalRetailWashesSold }}</td><td>{{ money(report.retailRevenue) }}</td><td>{{ report.membershipCancellations }}</td><td>{{ report.source }}</td><td><button class="secondary-button" @click="openHistoryReport(report)">Open</button></td></tr></tbody></table><p v-else class="muted">No saved weekly reports yet.</p></div>
         <div class="weekly-workspace-heading section-heading"><div><p class="eyebrow">P027A · GM Operating Report</p><h2>Weekly Location Performance Report</h2></div><label class="compact-label">Week start<input v-model="weeklyWeekStart" type="date" @change="loadWeeklyReport" /></label></div>
@@ -64,9 +66,10 @@
 
 <script>
 import LocationPerformance from './components/LocationPerformance.vue'
+import PeopleAccess from './components/people/PeopleAccess.vue'
 export default {
   name: 'App',
-  components: { LocationPerformance },
+  components: { LocationPerformance, PeopleAccess },
   data() {
     const now = new Date()
     const month = now.toISOString().slice(0, 7)
@@ -79,7 +82,7 @@ export default {
     assignmentFound() { return !!this.assignment?.assignmentFound }, role() { return this.assignment?.assignment?.mpp_role || '' }, roleLabel() { return this.role ? this.role.replaceAll('_', ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Unassigned' }, isActive() { return String(this.assignment?.assignment?.active || '').toLowerCase() === 'yes' },
     selectedScopeName() { return this.scopeLocations.find(location => location.locationId === this.selectedScopeLocation)?.name || this.selectedScopeLocation || this.context.activeLocation || '—' },
     isHostScope() { return !this.selectedScopeLocation || this.selectedScopeLocation === this.context.activeLocation },
-    navItems() { const items = [{ key: 'overview', label: 'Overview' }]; if (['general_manager','regional_manager','owner'].includes(this.role)) items.push({ key: 'location-performance', label: 'Location Performance' }); if (this.isHostScope && this.capabilities.includes('manage_seller_goals')) items.push({ key: 'seller-goals', label: 'Seller Goals' }); if (this.isHostScope && this.capabilities.includes('submit_shift')) items.push({ key: 'submit', label: 'Submit Shift' }, { key: 'history', label: 'My Activity' }); if (this.capabilities.includes('review_logs')) items.push({ key: 'review', label: 'Review Queue' }); if (this.isHostScope && this.capabilities.includes('provision_assignments')) items.push({ key: 'provision', label: 'Provision Users' }); return items }
+    navItems() { const items = [{ key: 'overview', label: 'Overview' }]; if (['general_manager','regional_manager','owner'].includes(this.role)) items.push({ key: 'location-performance', label: 'Location Performance' }); if (this.capabilities.includes('view_people_access') || this.capabilities.includes('manage_people_access')) items.push({ key: 'people-access', label: 'People & Access' }); if (this.isHostScope && this.capabilities.includes('manage_seller_goals')) items.push({ key: 'seller-goals', label: 'Seller Goals' }); if (this.isHostScope && this.capabilities.includes('submit_shift')) items.push({ key: 'submit', label: 'Submit Shift' }, { key: 'history', label: 'My Activity' }); if (this.capabilities.includes('review_logs')) items.push({ key: 'review', label: 'Review Queue' }); if (this.isHostScope && this.capabilities.includes('provision_assignments') && !this.capabilities.includes('manage_people_access')) items.push({ key: 'provision', label: 'Provision Users' }); return items }
   },
   async mounted() { try { this.ssoKey = await this.requestSsoKey(); const response = await fetch('/decrypt-sso', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: this.ssoKey }) }); this.context = await response.json(); await this.reloadAssignment() } catch (error) { this.error = error.message || 'Unable to load MPP workspace.' } finally { this.loading = false } },
   methods: {
